@@ -1,0 +1,794 @@
+openapi: 3.0.3
+info:
+  title: Transcript Service API
+  description: |
+    API for audio transcription service handling uploads from iOS client (mneia-whisper)
+    and processing through WhisperX + diarisation + speaker identification.
+
+    This API is part of the cross-cutting contract defined in ADR-2025-10-03-003.
+
+    ## Upload Flow Options
+
+    **Option A: Two-Phase Upload (Recommended for large files)**
+    1. POST /v1/jobs/init - Get presigned upload URL
+    2. PUT <presigned_url> - Upload audio file
+    3. POST /v1/jobs/{job_id}/commit - Commit job for processing
+    4. GET /v1/jobs/{job_id} - Poll for status
+
+    **Option B: Single Multipart Upload (Simpler for small files)**
+    1. POST /v1/jobs - Upload metadata + audio in single request
+    2. GET /v1/jobs/{job_id} - Poll for status
+
+    ## Authentication
+    All endpoints (except /v1/health/*) require API key authentication:
+    ```
+    Authorization: ApiKey <your-api-key>
+    ```
+
+    ## Rate Limits
+    - 10 job creations per minute per device
+    - 100 status checks per minute per device
+
+  version: 1.2.3
+  contact:
+    name: Transcript API Support
+    email: support@example.com
+  license:
+    name: Proprietary
+
+servers:
+  - url: https://api.transcript.example.com
+    description: Production server
+  - url: https://staging.transcript.example.com
+    description: Staging server
+  - url: http://localhost:8000
+    description: Local development
+
+security:
+  - ApiKeyAuth: []
+
+tags:
+  - name: Health
+    description: Service health and readiness checks
+  - name: Jobs (Two-Phase)
+    description: Two-phase upload flow (init → upload → commit → poll)
+  - name: Jobs (Single-Phase)
+    description: Single multipart upload flow
+  - name: Jobs (Common)
+    description: Common job operations (status, list, cancel)
+
+paths:
+  /v1/health:
+    get:
+      tags:
+        - Health
+      summary: Check service health
+      description: Returns overall health status of the service and its dependencies
+      security: []
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              example:
+                status: healthy
+                version: 1.2.3
+                services:
+                  api: up
+                  storage: up
+                  workers: up
+                  worker_queue_depth: 12
+                timestamp: '2025-10-09T10:30:00Z'
+
+  /v1/health/ready:
+    get:
+      tags:
+        - Health
+      summary: Check service readiness
+      description: Returns whether the service is ready to accept new jobs
+      security: []
+      responses:
+        '200':
+          description: Service is ready
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ready:
+                    type: boolean
+                    example: true
+        '503':
+          description: Service is not ready (maintenance mode)
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying
+              schema:
+                type: integer
+                example: 300
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ready:
+                    type: boolean
+                    example: false
+                  reason:
+                    type: string
+                    example: maintenance
+                  retry_after:
+                    type: integer
+                    description: Seconds to wait
+                    example: 300
+
+  /v1/jobs/init:
+    post:
+      tags:
+        - Jobs (Two-Phase)
+      summary: Initialize a new transcription job (Phase 1)
+      description: |
+        Creates a new job and returns a presigned URL for audio file upload.
+        This is the first step of the two-phase upload flow.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JobInitRequest'
+      responses:
+        '201':
+          description: Job initialized successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobInitResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimitExceeded'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /v1/jobs/{job_id}/commit:
+    post:
+      tags:
+        - Jobs (Two-Phase)
+      summary: Commit job for processing (Phase 3)
+      description: |
+        Commits the job after successful upload, triggering processing.
+        Must be called after uploading the file to the presigned URL.
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JobCommitRequest'
+      responses:
+        '200':
+          description: Job committed and queued for processing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobCommitResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ChecksumMismatch'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /v1/jobs:
+    post:
+      tags:
+        - Jobs (Single-Phase)
+      summary: Create job with multipart upload (Single-Phase)
+      description: |
+        Creates a new transcription job with metadata and audio file in a single request.
+        Simpler than two-phase but less suitable for large files (>50MB).
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - metadata
+                - audio_file
+              properties:
+                metadata:
+                  description: JSON metadata envelope
+                  type: string
+                  contentMediaType: application/json
+                audio_file:
+                  description: Audio file (m4a, wav, mp3, flac, ogg)
+                  type: string
+                  format: binary
+            encoding:
+              metadata:
+                contentType: application/json
+              audio_file:
+                contentType: audio/m4a, audio/wav, audio/mpeg, audio/flac, audio/ogg
+      responses:
+        '201':
+          description: Job created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobCreateResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '429':
+          $ref: '#/components/responses/RateLimitExceeded'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+    get:
+      tags:
+        - Jobs (Common)
+      summary: List jobs
+      description: Returns a paginated list of jobs for the authenticated user
+      parameters:
+        - name: status
+          in: query
+          description: Filter by job status
+          schema:
+            type: string
+            enum: [queued, processing, completed, failed]
+        - name: limit
+          in: query
+          description: Number of results per page
+          schema:
+            type: integer
+            default: 20
+            minimum: 1
+            maximum: 100
+        - name: offset
+          in: query
+          description: Pagination offset
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+      responses:
+        '200':
+          description: List of jobs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jobs:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/JobStatus'
+                  total:
+                    type: integer
+                    example: 42
+                  limit:
+                    type: integer
+                    example: 20
+                  offset:
+                    type: integer
+                    example: 0
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/jobs/{job_id}:
+    get:
+      tags:
+        - Jobs (Common)
+      summary: Get job status
+      description: |
+        Returns the current status of a transcription job.
+        Used for polling after job creation.
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          description: Job status retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobStatus'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags:
+        - Jobs (Common)
+      summary: Cancel job
+      description: |
+        Cancels a queued or processing job. Completed jobs cannot be cancelled.
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '204':
+          description: Job cancelled successfully
+        '400':
+          description: Job cannot be cancelled (already completed or failed)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: |
+        API Key authentication. Format: `ApiKey <your-api-key>`
+
+        Example: `Authorization: ApiKey sk_live_abc123def456`
+
+  parameters:
+    JobId:
+      name: job_id
+      in: path
+      required: true
+      description: Unique job identifier
+      schema:
+        type: string
+        pattern: '^job-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$'
+        example: job-550e8400-e29b-41d4-a716-446655440000
+
+  schemas:
+    HealthResponse:
+      type: object
+      required:
+        - status
+        - version
+        - timestamp
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded, unhealthy]
+          example: healthy
+        version:
+          type: string
+          example: 1.2.3
+        services:
+          type: object
+          properties:
+            api:
+              type: string
+              enum: [up, down]
+            storage:
+              type: string
+              enum: [up, down]
+            workers:
+              type: string
+              enum: [up, down]
+            worker_queue_depth:
+              type: integer
+              description: Number of jobs in processing queue
+        timestamp:
+          type: string
+          format: date-time
+
+    MetadataEnvelope:
+      type: object
+      required:
+        - external_event_id
+        - recorded_at_iso
+        - timezone
+        - device
+        - capture
+        - trace_id
+      properties:
+        external_event_id:
+          type: string
+          pattern: '^rec-\d{8}T\d{6}Z-[a-f0-9]{8}$'
+          description: Stable identifier generated on device
+          example: rec-20251003T091500Z-3f9c4241
+        recorded_at_iso:
+          type: string
+          format: date-time
+          example: '2025-10-03T09:15:00Z'
+        timezone:
+          type: string
+          description: IANA timezone identifier
+          example: Europe/Paris
+        device:
+          type: object
+          required:
+            - model
+            - os_version
+            - app_version
+          properties:
+            model:
+              type: string
+              example: iPhone16,2
+            os_version:
+              type: string
+              example: '18.0'
+            app_version:
+              type: string
+              example: 0.8.0
+        capture:
+          type: object
+          required:
+            - language
+            - duration_ms
+            - file_size_bytes
+          properties:
+            language:
+              type: string
+              pattern: '^[a-z]{2}$'
+              example: fr
+            duration_ms:
+              type: integer
+              minimum: 1000
+              maximum: 21600000
+              example: 534000
+            file_size_bytes:
+              type: integer
+              minimum: 1
+              maximum: 524288000
+              example: 12582912
+            gps:
+              type: object
+              nullable: true
+              required:
+                - lat
+                - lon
+                - accuracy_m
+              properties:
+                lat:
+                  type: number
+                  format: double
+                  minimum: -90
+                  maximum: 90
+                  example: 48.8566
+                lon:
+                  type: number
+                  format: double
+                  minimum: -180
+                  maximum: 180
+                  example: 2.3522
+                accuracy_m:
+                  type: number
+                  format: float
+                  minimum: 0
+                  example: 12.0
+            place_name:
+              type: string
+              nullable: true
+              example: Tour Eiffel, Paris
+            on_device_transcription:
+              type: boolean
+              example: true
+        participants_hint:
+          type: array
+          nullable: true
+          items:
+            type: object
+            required:
+              - display_name
+              - role
+            properties:
+              display_name:
+                type: string
+                example: Camille
+              role:
+                type: string
+                example: client
+        user_note:
+          type: string
+          nullable: true
+          example: Réunion stratégique Q4
+        trace_id:
+          type: string
+          format: uuid
+          example: 550e8400-e29b-41d4-a716-446655440000
+
+    JobInitRequest:
+      type: object
+      required:
+        - metadata
+      properties:
+        metadata:
+          $ref: '#/components/schemas/MetadataEnvelope'
+
+    JobInitResponse:
+      type: object
+      required:
+        - job_id
+        - upload_url
+        - expires_at
+        - max_file_size_bytes
+      properties:
+        job_id:
+          type: string
+          example: job-550e8400-e29b-41d4-a716-446655440000
+        upload_url:
+          type: string
+          format: uri
+          description: Presigned S3/R2 URL for PUT upload
+          example: https://storage.example.com/uploads/abc123?signature=xyz
+        expires_at:
+          type: string
+          format: date-time
+          description: Expiration time of the presigned URL (typically +15 minutes)
+          example: '2025-10-09T11:00:00Z'
+        max_file_size_bytes:
+          type: integer
+          example: 524288000
+
+    JobCommitRequest:
+      type: object
+      required:
+        - checksum_sha256
+        - file_size_bytes
+      properties:
+        checksum_sha256:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+          example: a3f5b9c1d7e2f8a4b6c3d9e5f1a2b8c4d0e6f2a8b4c0d6e2f8a4b0c6d2e8f4a0
+        file_size_bytes:
+          type: integer
+          example: 12582912
+
+    JobCommitResponse:
+      type: object
+      required:
+        - status
+        - estimated_completion_at
+      properties:
+        status:
+          type: string
+          enum: [queued]
+          example: queued
+        estimated_completion_at:
+          type: string
+          format: date-time
+          description: Estimated time when processing will complete
+          example: '2025-10-09T10:45:00Z'
+
+    JobCreateResponse:
+      type: object
+      required:
+        - job_id
+        - status
+      properties:
+        job_id:
+          type: string
+          example: job-550e8400-e29b-41d4-a716-446655440000
+        status:
+          type: string
+          enum: [queued]
+          example: queued
+        checksum_sha256:
+          type: string
+          description: Server-calculated checksum of uploaded file
+          example: a3f5b9c1d7e2f8a4b6c3d9e5f1a2b8c4d0e6f2a8b4c0d6e2f8a4b0c6d2e8f4a0
+
+    JobStatus:
+      type: object
+      required:
+        - job_id
+        - external_event_id
+        - status
+        - created_at
+        - updated_at
+      properties:
+        job_id:
+          type: string
+          example: job-550e8400-e29b-41d4-a716-446655440000
+        external_event_id:
+          type: string
+          example: rec-20251003T091500Z-3f9c4241
+        status:
+          type: string
+          enum: [queued, processing, completed, failed]
+          example: processing
+        progress_percent:
+          type: integer
+          minimum: 0
+          maximum: 100
+          nullable: true
+          description: Processing progress (only available during processing)
+          example: 45
+        created_at:
+          type: string
+          format: date-time
+          example: '2025-10-09T10:30:00Z'
+        updated_at:
+          type: string
+          format: date-time
+          example: '2025-10-09T10:35:00Z'
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+          example: null
+        package_uri:
+          type: string
+          format: uri
+          nullable: true
+          description: Download URL for completed package (tar.gz)
+          example: https://storage.example.com/results/rec-20251003T091500Z-3f9c4241.tar.gz
+        error:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/Error'
+
+    Error:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+          enum:
+            - validation_error
+            - invalid_audio_format
+            - missing_required_field
+            - unauthorized
+            - forbidden
+            - request_timeout
+            - payload_too_large
+            - checksum_mismatch
+            - invalid_presigned_url
+            - rate_limit_exceeded
+            - internal_server_error
+            - bad_gateway
+            - service_unavailable
+            - gateway_timeout
+          example: validation_error
+        message:
+          type: string
+          example: Metadata validation failed
+        details:
+          type: object
+          nullable: true
+          additionalProperties: true
+          example:
+            field: metadata.external_event_id
+            reason: Field is required and must match format rec-<ISO8601>-<UUID>
+        trace_id:
+          type: string
+          format: uuid
+          nullable: true
+          example: 550e8400-e29b-41d4-a716-446655440000
+        retry_after:
+          type: integer
+          nullable: true
+          description: Seconds to wait before retrying (for 429, 503)
+          example: null
+        documentation_url:
+          type: string
+          format: uri
+          nullable: true
+          example: https://docs.example.com/errors/validation_error
+
+  responses:
+    ValidationError:
+      description: Validation error (invalid metadata or request format)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: validation_error
+            message: Metadata validation failed
+            details:
+              field: metadata.external_event_id
+              reason: Field is required and must match format rec-<ISO8601>-<UUID>
+            trace_id: 550e8400-e29b-41d4-a716-446655440000
+            documentation_url: https://docs.example.com/errors/validation_error
+
+    Unauthorized:
+      description: Invalid or missing API key
+      headers:
+        WWW-Authenticate:
+          schema:
+            type: string
+            example: ApiKey realm="Transcript API"
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: unauthorized
+            message: Invalid or expired API key
+
+    NotFound:
+      description: Job not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: not_found
+            message: Job not found
+
+    PayloadTooLarge:
+      description: File exceeds maximum size limit (500MB)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: payload_too_large
+            message: File exceeds 500MB limit
+            details:
+              max_size_bytes: 524288000
+              received_size_bytes: 600000000
+
+    RateLimitExceeded:
+      description: Too many requests
+      headers:
+        Retry-After:
+          description: Seconds to wait before retrying
+          schema:
+            type: integer
+            example: 60
+        X-RateLimit-Limit:
+          description: Request limit per window
+          schema:
+            type: integer
+            example: 10
+        X-RateLimit-Remaining:
+          description: Remaining requests in current window
+          schema:
+            type: integer
+            example: 0
+        X-RateLimit-Reset:
+          description: Unix timestamp when limit resets
+          schema:
+            type: integer
+            example: 1696854000
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: rate_limit_exceeded
+            message: Too many requests (limit: 10/min per device)
+            retry_after: 60
+
+    ChecksumMismatch:
+      description: SHA256 checksum does not match uploaded file
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: checksum_mismatch
+            message: SHA256 checksum does not match uploaded file
+            details:
+              expected: a3f5b9c1d7e2f8a4b6c3d9e5f1a2b8c4d0e6f2a8b4c0d6e2f8a4b0c6d2e8f4a0
+              received: b4a6c0d8e2f4a0b6c2d8e4f0a2b8c4d0e6f2a8b4c0d6e2f8a4b0c6d2e8f4a1
+
+    InternalServerError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: internal_server_error
+            message: An unexpected error occurred. Please try again later.
+            trace_id: 550e8400-e29b-41d4-a716-446655440000

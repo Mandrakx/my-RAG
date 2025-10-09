@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mesdevs.local/schemas/audio-ingestion-message.json",
+  "title": "AudioIngestionMessage",
+  "description": "Schema for messages published to Redis Streams audio.ingestion.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "external_event_id",
+    "package_uri",
+    "checksum",
+    "schema_version",
+    "retry_count",
+    "produced_at"
+  ],
+  "properties": {
+    "external_event_id": {
+      "type": "string",
+      "minLength": 4,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._:-]+$",
+      "description": "Stable identifier of the conversation payload."
+    },
+    "package_uri": {
+      "type": "string",
+      "format": "uri",
+      "description": "Full MinIO URI pointing to the tar.gz archive."
+    },
+    "checksum": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$",
+      "description": "SHA-256 checksum of the archive, prefixed with sha256:."
+    },
+    "schema_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+$",
+      "description": "Semantic version of the payload schema (major.minor)."
+    },
+    "retry_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 10,
+      "description": "Number of delivery attempts performed by the producer."
+    },
+    "produced_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC timestamp when the message was emitted."
+    },
+    "producer": {
+      "type": "object",
+      "description": "Information about the emitting service instance.",
+      "required": ["service"],
+      "properties": {
+        "service": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "instance": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "additionalProperties": false
+    },
+    "priority": {
+      "type": "string",
+      "enum": ["normal", "high"],
+      "description": "Priority hint for ingestion scheduling."
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Optional additional fields agreed between teams.",
+      "additionalProperties": true
+    }
+  }
+}
+

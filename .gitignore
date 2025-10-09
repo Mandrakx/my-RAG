@@ -1,0 +1,183 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.venv
+pip-log.txt
+pip-delete-this-directory.txt
+.pytest_cache/
+*.cover
+.coverage
+.coverage.*
+*.log
+
+# Virtual environments
+bin/
+include/
+lib/
+lib64/
+share/
+pyvenv.cfg
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Jupyter Notebooks
+.ipynb_checkpoints
+*.ipynb_checkpoints
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+*.env
+
+# API Keys and Secrets
+secrets/
+config/secrets.yaml
+config/secrets.json
+*.key
+*.pem
+*.cert
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+instance/
+
+# Vector stores and embeddings
+vectorstore/
+embeddings/
+chroma_db/
+faiss_index/
+qdrant_storage/
+pinecone_cache/
+weaviate_data/
+*.index
+*.pkl
+
+# Model files
+models/
+*.bin
+*.pt
+*.pth
+*.onnx
+*.h5
+*.safetensors
+*.gguf
+*.ggml
+
+# Data files
+data/raw/
+data/processed/
+datasets/
+corpus/
+documents/
+*.csv
+*.xlsx
+*.parquet
+
+# Cache
+.cache/
+cache/
+__pycache__/
+*.cache
+.chromadb/
+
+# Logs
+logs/
+*.log
+log/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+eggs/
+.eggs/
+
+# Node modules (if using JavaScript/TypeScript)
+node_modules/
+package-lock.json
+yarn.lock
+
+# Output files
+output/
+results/
+exports/
+generated/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+
+# OS files
+Thumbs.db
+desktop.ini
+
+# Docker
+*.dockerignore
+docker-compose.override.yml
+
+# Testing
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+
+# Documentation build
+docs/_build/
+docs/.build/
+site/
+
+# LangChain specific
+.langchain/
+langchain_cache/
+
+# LlamaIndex specific
+.llama_index/
+storage/
+
+# Streamlit
+.streamlit/
+
+# Gradio
+flagged/
+
+# Weights & Biases
+wandb/
+
+# MLflow
+mlruns/
+mlflow.db
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# Archive files
+*.zip
+*.tar.gz
+*.rar
+
+# Custom ignore patterns
+local_data/
+private/
+scratch/
+experiments/

@@ -1,0 +1,436 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mesdevs.local/schemas/conversation-payload.json",
+  "title": "ConversationPayload",
+  "description": "Canonical payload produced by the audio pipeline and consumed by the RAG ingestion service.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "external_event_id",
+    "source_system",
+    "created_at",
+    "meeting_metadata",
+    "participants",
+    "segments"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "pattern": "^\\\\d+\\\\.\\\\d+$",
+      "description": "Semantic version (major.minor) of the payload schema."
+    },
+    "external_event_id": {
+      "type": "string",
+      "minLength": 4,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._:-]+$",
+      "description": "Stable identifier for the conversation payload; matches archive name and folder."
+    },
+    "source_system": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "Name of the producing audio pipeline or source."
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC timestamp when the payload was generated."
+    },
+    "meeting_metadata": {
+      "type": "object",
+      "description": "Contextual information for the captured conversation.",
+      "required": [
+        "scheduled_start"
+      ],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "scheduled_start": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Scheduled start time in UTC."
+        },
+        "duration_sec": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400,
+          "description": "Duration of the meeting in seconds."
+        },
+        "end_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Actual end timestamp in UTC."
+        },
+        "location": {
+          "$ref": "#/$defs/location"
+        },
+        "timezone": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_+/:-]+$",
+          "description": "Timezone identifier (e.g. Europe/Paris)."
+        },
+        "organizer": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "agenda": {
+          "type": "string",
+          "maxLength": 4096
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "anyOf": [
+            {
+              "required": [
+                "duration_sec"
+              ]
+            },
+            {
+              "required": [
+                "end_at"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "participants": {
+      "type": "array",
+      "description": "List of attendees and speakers referenced in segments.",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/participant"
+      }
+    },
+    "segments": {
+      "type": "array",
+      "description": "Chronological transcript segments for the conversation.",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/segment"
+      }
+    },
+    "quality_flags": {
+      "type": "object",
+      "description": "Quality indicators computed by the producer pipeline.",
+      "properties": {
+        "low_confidence": {
+          "type": "boolean",
+          "default": false
+        },
+        "missing_audio": {
+          "type": "boolean",
+          "default": false
+        },
+        "overlapping_speech": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "attachments": {
+      "type": "object",
+      "description": "External artefacts associated with the conversation (audio URIs, documents, etc.).",
+      "additionalProperties": {
+        "$ref": "#/$defs/attachmentValue"
+      }
+    },
+    "analytics": {
+      "type": "object",
+      "description": "Derived analytics such as topics, sentiment, diarization details; structure versioned per schema.",
+      "additionalProperties": true
+    },
+    "tags": {
+      "type": "array",
+      "description": "Free-form tags or labels for the conversation.",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64
+      },
+      "uniqueItems": true
+    },
+    "primary_language": {
+      "type": "string",
+      "pattern": "^[a-z]{2}(?:-[A-Za-z0-9]+)*$",
+      "description": "Primary language code (BCP-47)."
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Producer-specific metadata (non-critical).",
+      "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "location": {
+      "type": "object",
+      "required": [
+        "lat",
+        "lon"
+      ],
+      "properties": {
+        "lat": {
+          "type": "number",
+          "minimum": -90,
+          "maximum": 90
+        },
+        "lon": {
+          "type": "number",
+          "minimum": -180,
+          "maximum": 180
+        },
+        "display_name": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "address": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "floor": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "room": {
+          "type": "string",
+          "maxLength": 64
+        }
+      },
+      "additionalProperties": false
+    },
+    "participant": {
+      "type": "object",
+      "required": [
+        "speaker_id",
+        "display_name"
+      ],
+      "properties": {
+        "speaker_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "display_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "email": {
+          "type": "string",
+          "format": "email"
+        },
+        "role": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "company": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "phone": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "segment": {
+      "type": "object",
+      "required": [
+        "segment_id",
+        "speaker_id",
+        "start_ms",
+        "end_ms",
+        "text",
+        "language",
+        "confidence"
+      ],
+      "properties": {
+        "segment_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "speaker_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "Must reference an entry in participants[].speaker_id."
+        },
+        "channel": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 32
+        },
+        "start_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "end_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "language": {
+          "type": "string",
+          "pattern": "^[a-z]{2}(?:-[A-Za-z0-9]+)*$"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "offset_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "speaker_label": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "annotations": {
+          "type": "object",
+          "properties": {
+            "topics": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "uniqueItems": true
+            },
+            "entities": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/entity"
+              }
+            },
+            "sentiment": {
+              "type": "object",
+              "properties": {
+                "label": {
+                  "type": "string",
+                  "enum": [
+                    "positive",
+                    "neutral",
+                    "negative",
+                    "mixed"
+                  ]
+                },
+                "score": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                }
+              },
+              "required": [
+                "label",
+                "score"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": true
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "entity": {
+      "type": "object",
+      "required": [
+        "type",
+        "text"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "start_char": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "end_char": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "attachmentValue": {
+      "anyOf": [
+        {
+          "type": "string",
+          "format": "uri"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uri"
+          },
+          "minItems": 1
+        },
+        {
+          "type": "object",
+          "required": [
+            "uri"
+          ],
+          "properties": {
+            "uri": {
+              "type": "string",
+              "format": "uri"
+            },
+            "content_type": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "notes": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
+          "additionalProperties": true
+        }
+      ]
+    }
+  }
+}

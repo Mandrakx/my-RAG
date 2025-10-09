@@ -1,0 +1,3 @@
+En plus des besoins défini dans le fichier SPEC_CONVERSATION_RAG.md, je veux pouvoir poser des questions sur les différents stypes de document et archives de mon disque dur.
+Il s'agit donc de pouvoir avoirun system RAG qui sera s'alimenter de fichiers dans des repertoires définis dan smon abrborescence de fichier et sera capable de traiter les fichiers de type bureautique: doc,ppt, xls,docx,pptx,xlsx documents numeiques et livres:epub, pdf email:.pst
+Le systeme doit pouvoir permettre de répondre à des questions portant sur ces documents en fournissant des liens vers les réfrences utilisées pour trouver l'information.
