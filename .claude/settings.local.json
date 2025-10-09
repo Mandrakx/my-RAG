@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Read(//f/MesDevs/mneia-whisper/docs/**)"
+      "Read(//f/MesDevs/mneia-whisper/docs/**)",
+      "Bash(cat:*)",
+      "Bash(clip)"
     ],
     "deny": [],
     "ask": []

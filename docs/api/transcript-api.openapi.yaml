@@ -9,15 +9,19 @@ info:
 
     ## Upload Flow Options
 
-    **Option A: Two-Phase Upload (Recommended for large files)**
-    1. POST /v1/jobs/init - Get presigned upload URL
-    2. PUT <presigned_url> - Upload audio file
-    3. POST /v1/jobs/{job_id}/commit - Commit job for processing
-    4. GET /v1/jobs/{job_id} - Poll for status
+    **Option A: Presigned URL Upload (Recommended for large files)**
 
-    **Option B: Single Multipart Upload (Simpler for small files)**
-    1. POST /v1/jobs - Upload metadata + audio in single request
-    2. GET /v1/jobs/{job_id} - Poll for status
+    Complete flow in 4 steps (2 API calls to Transcript, 1 to S3, 1 polling):
+    1. POST /v1/jobs/init - Get presigned S3 URL (Transcript API)
+    2. PUT <presigned_url> - Upload audio file directly to S3 (S3 API, not Transcript)
+    3. POST /v1/jobs/{job_id}/commit - Commit job for processing (Transcript API)
+    4. GET /v1/jobs/{job_id} - Poll for status (Transcript API)
+
+    **Option B: Single Multipart Upload (Simpler for small files <50MB)**
+
+    Complete flow in 2 steps:
+    1. POST /v1/jobs - Upload metadata + audio in single request (Transcript API)
+    2. GET /v1/jobs/{job_id} - Poll for status (Transcript API)
 
     ## Authentication
     All endpoints (except /v1/health/*) require API key authentication:
@@ -50,12 +54,17 @@ security:
 tags:
   - name: Health
     description: Service health and readiness checks
-  - name: Jobs (Two-Phase)
-    description: Two-phase upload flow (init → upload → commit → poll)
-  - name: Jobs (Single-Phase)
-    description: Single multipart upload flow
+  - name: Jobs (Presigned URL Flow)
+    description: |
+      Presigned URL upload flow (4 steps total):
+      1. init (Transcript API)
+      2. upload to S3 (external - not documented here)
+      3. commit (Transcript API)
+      4. poll status (see "Jobs - Common")
+  - name: Jobs (Direct Upload)
+    description: Single multipart upload flow (2 steps)
   - name: Jobs (Common)
-    description: Common job operations (status, list, cancel)
+    description: Common job operations (status, list, cancel) - used by both flows
 
 paths:
   /v1/health:
@@ -127,11 +136,16 @@ paths:
   /v1/jobs/init:
     post:
       tags:
-        - Jobs (Two-Phase)
-      summary: Initialize a new transcription job (Phase 1)
+        - Jobs (Presigned URL Flow)
+      summary: Initialize a new transcription job (Step 1/4)
       description: |
-        Creates a new job and returns a presigned URL for audio file upload.
-        This is the first step of the two-phase upload flow.
+        Creates a new job and returns a presigned S3 URL for audio file upload.
+        This is step 1 of the presigned URL upload flow.
+
+        **Next steps:**
+        - Step 2: PUT the audio file to the returned upload_url (S3 API, not Transcript)
+        - Step 3: POST /v1/jobs/{job_id}/commit to trigger processing
+        - Step 4: GET /v1/jobs/{job_id} to poll for completion
       requestBody:
         required: true
         content:
@@ -157,11 +171,18 @@ paths:
   /v1/jobs/{job_id}/commit:
     post:
       tags:
-        - Jobs (Two-Phase)
-      summary: Commit job for processing (Phase 3)
+        - Jobs (Presigned URL Flow)
+      summary: Commit job for processing (Step 3/4)
       description: |
-        Commits the job after successful upload, triggering processing.
-        Must be called after uploading the file to the presigned URL.
+        Commits the job after successful upload to S3, triggering processing.
+        This is step 3 of the presigned URL upload flow.
+
+        **Prerequisites:**
+        - Step 1: POST /v1/jobs/init completed
+        - Step 2: PUT to presigned S3 URL completed successfully
+
+        **Next step:**
+        - Step 4: GET /v1/jobs/{job_id} to poll for completion
       parameters:
         - $ref: '#/components/parameters/JobId'
       requestBody:
@@ -189,11 +210,16 @@ paths:
   /v1/jobs:
     post:
       tags:
-        - Jobs (Single-Phase)
-      summary: Create job with multipart upload (Single-Phase)
+        - Jobs (Direct Upload)
+      summary: Create job with direct multipart upload (Step 1/2)
       description: |
         Creates a new transcription job with metadata and audio file in a single request.
-        Simpler than two-phase but less suitable for large files (>50MB).
+        This is step 1 of the direct upload flow.
+
+        Simpler than presigned URL flow but less suitable for large files (>50MB).
+
+        **Next step:**
+        - Step 2: GET /v1/jobs/{job_id} to poll for completion
       requestBody:
         required: true
         content:
@@ -205,9 +231,8 @@ paths:
                 - audio_file
               properties:
                 metadata:
-                  description: JSON metadata envelope
+                  description: JSON metadata envelope (stringified JSON object)
                   type: string
-                  contentMediaType: application/json
                 audio_file:
                   description: Audio file (m4a, wav, mp3, flac, ogg)
                   type: string
@@ -517,6 +542,32 @@ components:
         - upload_url
         - expires_at
         - max_file_size_bytes
+      description: |
+        Response from job initialization. Contains a presigned URL for direct S3 upload (Step 2).
+
+        **Step 2 Implementation (S3 Upload):**
+        ```http
+        PUT {upload_url}
+        Content-Type: audio/m4a
+        Content-MD5: <base64-encoded-md5> (optional but recommended)
+
+        <binary audio file>
+        ```
+
+        **iOS Example:**
+        ```swift
+        var request = URLRequest(url: URL(string: uploadURL)!)
+        request.httpMethod = "PUT"
+        request.setValue("audio/m4a", forHTTPHeaderField: "Content-Type")
+        request.httpBody = audioData
+
+        let task = URLSession.shared.dataTask(with: request) { data, response, error in
+            if (response as? HTTPURLResponse)?.statusCode == 200 {
+                // Proceed to step 3: POST /v1/jobs/{job_id}/commit
+            }
+        }
+        task.resume()
+        ```
       properties:
         job_id:
           type: string
@@ -524,7 +575,10 @@ components:
         upload_url:
           type: string
           format: uri
-          description: Presigned S3/R2 URL for PUT upload
+          description: |
+            Presigned S3/R2 URL for direct PUT upload (Step 2 - external API).
+            Upload the audio file directly to this URL using HTTP PUT.
+            No Authorization header required (signature is in the URL).
           example: https://storage.example.com/uploads/abc123?signature=xyz
         expires_at:
           type: string
@@ -766,7 +820,7 @@ components:
             $ref: '#/components/schemas/Error'
           example:
             code: rate_limit_exceeded
-            message: Too many requests (limit: 10/min per device)
+            message: "Too many requests (limit: 10/min per device)"
             retry_after: 60
 
     ChecksumMismatch:
