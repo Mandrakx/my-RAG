@@ -53,21 +53,117 @@ docker-run: ## Run Docker container
 docker-up: ## Start all services with docker-compose
 	@echo "$(GREEN)Starting all services...$(NC)"
 	$(DOCKER_COMPOSE) up -d
+	@echo "$(GREEN)Waiting for services to be ready...$(NC)"
+	@sleep 5
+	@$(MAKE) status
 
 .PHONY: docker-down
 docker-down: ## Stop all services
 	@echo "$(YELLOW)Stopping all services...$(NC)"
 	$(DOCKER_COMPOSE) down
 
+.PHONY: docker-restart
+docker-restart: ## Restart all services
+	@echo "$(YELLOW)Restarting all services...$(NC)"
+	$(DOCKER_COMPOSE) restart
+
 .PHONY: docker-logs
 docker-logs: ## Show logs from all services
 	$(DOCKER_COMPOSE) logs -f
+
+.PHONY: docker-logs-app
+docker-logs-app: ## Show logs from main app only
+	$(DOCKER_COMPOSE) logs -f app
 
 .PHONY: docker-clean
 docker-clean: ## Clean Docker resources
 	@echo "$(RED)Cleaning Docker resources...$(NC)"
 	$(DOCKER_COMPOSE) down -v
 	docker system prune -f
+
+.PHONY: docker-rebuild
+docker-rebuild: ## Rebuild and restart all services
+	@echo "$(GREEN)Rebuilding all services...$(NC)"
+	$(DOCKER_COMPOSE) down
+	$(DOCKER_COMPOSE) build --no-cache
+	$(DOCKER_COMPOSE) up -d
+
+.PHONY: status
+status: ## Show status of all services
+	@echo "$(GREEN)Service Status:$(NC)"
+	@echo ""
+	@$(DOCKER_COMPOSE) ps
+	@echo ""
+	@echo "$(GREEN)Quick Access URLs:$(NC)"
+	@echo "  Application API:    http://localhost:8000"
+	@echo "  MinIO Console:      http://localhost:9001"
+	@echo "  Qdrant Dashboard:   http://localhost:6333/dashboard"
+	@echo "  Grafana:            http://localhost:3000"
+	@echo "  Prometheus:         http://localhost:9090"
+
+# MinIO Operations
+.PHONY: minio-init
+minio-init: ## Initialize MinIO buckets and policies
+	@echo "$(GREEN)Initializing MinIO...$(NC)"
+	docker exec rag-minio-init sh /scripts/init-minio.sh
+
+.PHONY: minio-console
+minio-console: ## Open MinIO console in browser
+	@echo "$(GREEN)Opening MinIO console...$(NC)"
+	@echo "URL: http://localhost:9001"
+	@echo "Credentials: minioadmin / minioadmin"
+
+.PHONY: minio-buckets
+minio-buckets: ## List MinIO buckets
+	@docker exec rag-minio mc ls myminio
+
+.PHONY: minio-upload-test
+minio-upload-test: ## Upload a test file to ingestion bucket
+	@echo "$(GREEN)Uploading test file to ingestion bucket...$(NC)"
+	@echo "Test file content" > /tmp/test-upload.txt
+	@docker exec -i rag-minio mc cp - myminio/ingestion/test-upload.txt < /tmp/test-upload.txt
+	@rm /tmp/test-upload.txt
+	@echo "$(GREEN)Test file uploaded successfully$(NC)"
+
+.PHONY: minio-logs
+minio-logs: ## Show MinIO logs
+	$(DOCKER_COMPOSE) logs -f minio
+
+# Qdrant Operations
+.PHONY: qdrant-dashboard
+qdrant-dashboard: ## Open Qdrant dashboard in browser
+	@echo "$(GREEN)Opening Qdrant dashboard...$(NC)"
+	@echo "URL: http://localhost:6333/dashboard"
+
+.PHONY: qdrant-collections
+qdrant-collections: ## List Qdrant collections
+	@curl -s http://localhost:6333/collections | python -m json.tool
+
+.PHONY: qdrant-health
+qdrant-health: ## Check Qdrant health
+	@curl -s http://localhost:6333/healthz && echo " $(GREEN)✓ Qdrant is healthy$(NC)" || echo " $(RED)✗ Qdrant is down$(NC)"
+
+.PHONY: qdrant-logs
+qdrant-logs: ## Show Qdrant logs
+	$(DOCKER_COMPOSE) logs -f qdrant
+
+# Redis Operations
+.PHONY: redis-cli
+redis-cli: ## Open Redis CLI
+	@docker exec -it rag-redis redis-cli
+
+.PHONY: redis-monitor
+redis-monitor: ## Monitor Redis commands in real-time
+	@docker exec -it rag-redis redis-cli MONITOR
+
+.PHONY: redis-streams
+redis-streams: ## Show Redis streams info
+	@echo "$(GREEN)Redis Streams Information:$(NC)"
+	@docker exec -it rag-redis redis-cli XINFO STREAMS ingestion:events 2>/dev/null || echo "No streams found"
+
+.PHONY: redis-logs
+redis-logs: ## Show Redis logs
+	$(DOCKER_COMPOSE) logs -f redis
 
 # Database
 .PHONY: db-migrate
@@ -85,6 +181,17 @@ db-reset: ## Reset database
 	@echo "$(RED)Resetting database...$(NC)"
 	alembic downgrade base
 	alembic upgrade head
+
+.PHONY: db-shell
+db-shell: ## Open PostgreSQL shell
+	@docker exec -it rag-postgres psql -U raguser -d ragdb
+
+.PHONY: db-backup
+db-backup: ## Backup PostgreSQL database
+	@echo "$(GREEN)Backing up database...$(NC)"
+	@mkdir -p ./backups
+	@docker exec rag-postgres pg_dump -U raguser ragdb > ./backups/ragdb_$(shell date +%Y%m%d_%H%M%S).sql
+	@echo "$(GREEN)Backup completed: ./backups/ragdb_$(shell date +%Y%m%d_%H%M%S).sql$(NC)"
 
 # Testing
 .PHONY: test

@@ -13,8 +13,15 @@ openai==1.6.1
 anthropic==0.8.1
 tiktoken==0.5.2
 
+# Transformers & NLP
+transformers==4.36.2
+sentence-transformers==2.3.1
+torch==2.1.2
+tokenizers==0.15.0
+accelerate==0.25.0
+
 # Vector stores
-chromadb==0.4.22
+qdrant-client==1.7.0
 faiss-cpu==1.7.4
 
 # Document processing
@@ -24,11 +31,22 @@ pandas==2.1.4
 openpyxl==3.1.2
 python-multipart==0.0.6
 
+# NLP Models (Optional - for SpaCy)
+spacy==3.7.2
+# Run: python -m spacy download fr_core_news_lg
+
 # Database
 sqlalchemy==2.0.25
 alembic==1.13.1
 asyncpg==0.29.0
+psycopg2-binary==2.9.9
 redis==5.0.1
+
+# Object Storage
+minio==7.2.3
+
+# Data Validation
+jsonschema==4.20.0
 
 # API & Web
 httpx==0.26.0

@@ -20,7 +20,8 @@ services:
     depends_on:
       - postgres
       - redis
-      - chroma
+      - qdrant
+      - minio
     networks:
       - rag-network
     restart: unless-stopped
@@ -53,20 +54,70 @@ services:
       - rag-network
     restart: unless-stopped
 
-  # Vector Store ChromaDB
-  chroma:
-    image: chromadb/chroma:latest
-    container_name: rag-chroma
+  # Vector Store Qdrant
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: rag-qdrant
     ports:
-      - "8001:8000"
+      - "6333:6333"  # HTTP API
+      - "6334:6334"  # gRPC API
     volumes:
-      - chroma_data:/chroma/chroma
+      - qdrant_data:/qdrant/storage
     environment:
-      - IS_PERSISTENT=TRUE
-      - PERSIST_DIRECTORY=/chroma/chroma
+      - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__LOG_LEVEL=INFO
     networks:
       - rag-network
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:6333/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Object Storage MinIO
+  minio:
+    image: minio/minio:latest
+    container_name: rag-minio
+    ports:
+      - "9000:9000"   # API
+      - "9001:9001"   # Console
+    volumes:
+      - minio_data:/data
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_BROWSER_REDIRECT_URL: http://localhost:9001
+    command: server /data --console-address ":9001"
+    networks:
+      - rag-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  # MinIO Init - Creates buckets on startup
+  minio-init:
+    image: minio/mc:latest
+    container_name: rag-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      /usr/bin/mc alias set myminio http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:-minioadmin};
+      /usr/bin/mc mb myminio/ingestion --ignore-existing;
+      /usr/bin/mc mb myminio/results --ignore-existing;
+      /usr/bin/mc mb myminio/archive --ignore-existing;
+      /usr/bin/mc anonymous set download myminio/results;
+      /usr/bin/mc event add myminio/ingestion arn:minio:sqs::PRIMARY:redis --event put --suffix .tar.gz || true;
+      echo 'MinIO buckets initialized successfully';
+      exit 0;
+      "
+    networks:
+      - rag-network
 
   # Monitoring - Prometheus
   prometheus:
@@ -126,6 +177,7 @@ networks:
 volumes:
   postgres_data:
   redis_data:
-  chroma_data:
+  qdrant_data:
+  minio_data:
   prometheus_data:
   grafana_data:
