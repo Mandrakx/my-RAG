@@ -13,6 +13,7 @@ from .config import IngestionConfig, clients
 from .models import IngestionJob, IngestionStatus
 from .transcript_validator import validate_conversation_from_transcript
 from .storage import IngestionStorage
+from .schemas import SchemaValidator
 
 # Import NLP processor
 try:
@@ -173,61 +174,34 @@ class RedisStreamConsumer:
 
             logger.info(f"[{job_id}] Conversation created: {conversation.id}")
 
-            # Step 4: NLP Processing (embeddings, NER, sentiment)
-            if self.nlp_processor:
-                logger.info(f"[{job_id}] Running NLP processing...")
+            # Step 4: NLP Processing (HYBRID: consume upstream or fallback to local)
+            nlp_mode = self._detect_nlp_mode(conversation_json)
+            logger.info(f"[{job_id}] NLP mode: {nlp_mode}")
 
+            if nlp_mode == 'enriched':
+                # v1.1: Consume upstream NLP annotations
+                logger.info(f"[{job_id}] Consuming upstream NLP annotations (v1.1)")
                 try:
-                    # Convert segments to turns format for NLP
-                    turns = [
-                        {
-                            'turn': idx,
-                            'speaker': seg.display_name if hasattr(seg, 'display_name') else seg.speaker_id,
-                            'text': seg.text,
-                            'timestamp_ms': seg.start_ms,
-                            'confidence': seg.confidence
-                        }
-                        for idx, seg in enumerate(validated_payload.segments)
-                    ]
-
-                    # Run NLP pipeline
-                    nlp_result = await self.nlp_processor.process_conversation(
-                        conversation_id=conversation.id,
-                        turns=turns,
-                        metadata={
-                            'job_id': job_id,
-                            'external_event_id': validated_payload.external_event_id,
-                            'date': validated_payload.meeting_metadata.scheduled_start.isoformat(),
-                            'language': validated_payload.primary_language or 'fr'
-                        }
+                    await self._consume_upstream_nlp(
+                        job_id=job_id,
+                        job=job,
+                        conversation=conversation,
+                        payload=validated_payload,
+                        conversation_json=conversation_json
                     )
-
-                    # Update conversation with NLP results
-                    await self.storage.update_conversation_topics(
-                        conversation.id,
-                        topics=list(nlp_result.entities.get('PER', []))[:5]  # Top persons as topics
-                    )
-
-                    # Update job metadata with NLP stats
-                    job.processing_metadata = {
-                        'num_chunks': nlp_result.num_chunks,
-                        'num_embeddings': nlp_result.num_embeddings,
-                        'num_persons': len(nlp_result.persons),
-                        'avg_sentiment': nlp_result.sentiment_analysis['stats'].get('avg_stars'),
-                        'nlp_processing_ms': nlp_result.processing_time_ms
-                    }
-
-                    logger.info(
-                        f"[{job_id}] NLP processing complete: "
-                        f"{nlp_result.num_chunks} chunks, "
-                        f"{len(nlp_result.persons)} persons, "
-                        f"sentiment: {nlp_result.sentiment_analysis['stats'].get('avg_stars'):.1f}"
-                    )
-
                 except Exception as nlp_error:
-                    logger.error(f"[{job_id}] NLP processing failed: {nlp_error}")
+                    logger.error(f"[{job_id}] Upstream NLP consumption failed: {nlp_error}")
                     logger.error(traceback.format_exc())
-                    # Continue anyway - NLP failure shouldn't fail the whole job
+                    # Fallback to local NLP
+                    if self.nlp_processor:
+                        logger.info(f"[{job_id}] Falling back to local NLP processing...")
+                        await self._run_local_nlp(job_id, job, conversation, validated_payload)
+
+            elif nlp_mode == 'legacy' and self.nlp_processor:
+                # v1.0: Run local NLP processing
+                logger.info(f"[{job_id}] Running local NLP processing (v1.0 fallback)")
+                await self._run_local_nlp(job_id, job, conversation, validated_payload)
+
             else:
                 logger.info(f"[{job_id}] NLP processing skipped (not available)")
 
@@ -322,6 +296,156 @@ class RedisStreamConsumer:
     def stop(self):
         """Stop the consumer"""
         self.running = False
+
+    def _detect_nlp_mode(self, conversation_json: Dict[str, Any]) -> str:
+        """
+        Detect if payload contains upstream NLP annotations (v1.1) or is legacy (v1.0)
+
+        Returns:
+            'enriched' if v1.1 with NLP annotations, 'legacy' otherwise
+        """
+        has_annotations = SchemaValidator.has_nlp_annotations(conversation_json)
+        return 'enriched' if has_annotations else 'legacy'
+
+    async def _consume_upstream_nlp(
+        self,
+        job_id: str,
+        job: IngestionJob,
+        conversation: Any,
+        payload: Any,
+        conversation_json: Dict[str, Any]
+    ):
+        """
+        Consume upstream NLP annotations from transcript service (v1.1)
+
+        Extracts sentiment and entities from segments, aggregates stats,
+        and updates conversation metadata.
+        """
+        segments = conversation_json.get('segments', [])
+        analytics = conversation_json.get('analytics', {})
+
+        # Extract segment-level annotations
+        sentiments = []
+        all_entities = []
+        persons = set()
+
+        for seg in segments:
+            # Extract sentiment
+            sentiment = SchemaValidator.extract_sentiment_from_segment(seg)
+            if sentiment:
+                sentiments.append({
+                    'label': sentiment.get('label'),
+                    'score': sentiment.get('score'),
+                    'stars': sentiment.get('stars')
+                })
+
+            # Extract entities
+            entities = SchemaValidator.extract_entities_from_segment(seg)
+            for entity in entities:
+                all_entities.append(entity)
+                if entity.get('type') == 'PERSON':
+                    persons.add(entity.get('text'))
+
+        # Get conversation-level analytics
+        sentiment_summary = analytics.get('sentiment_summary', {})
+        entities_summary = analytics.get('entities_summary', {})
+
+        # Update conversation with extracted topics (top persons)
+        if persons:
+            await self.storage.update_conversation_topics(
+                conversation.id,
+                topics=list(persons)[:5]
+            )
+
+        # Update job metadata with upstream NLP stats
+        job.processing_metadata = {
+            'nlp_source': 'upstream_transcript',
+            'schema_version': conversation_json.get('schema_version', '1.1'),
+            'num_segments_with_sentiment': len(sentiments),
+            'num_entities_extracted': len(all_entities),
+            'num_persons': len(persons),
+            'avg_sentiment_stars': sentiment_summary.get('avg_stars'),
+            'overall_sentiment': sentiment_summary.get('overall'),
+            'sentiment_distribution': sentiment_summary.get('distribution'),
+            'entities_by_type': {
+                k: len(v) for k, v in entities_summary.items()
+            }
+        }
+
+        logger.info(
+            f"[{job_id}] Upstream NLP consumed: "
+            f"{len(sentiments)} segments with sentiment, "
+            f"{len(all_entities)} entities ({len(persons)} persons), "
+            f"overall: {sentiment_summary.get('overall', 'N/A')}"
+        )
+
+    async def _run_local_nlp(
+        self,
+        job_id: str,
+        job: IngestionJob,
+        conversation: Any,
+        validated_payload: Any
+    ):
+        """
+        Run local NLP processing (fallback for v1.0 or if upstream fails)
+
+        Executes full NLP pipeline: chunking, embeddings, NER, sentiment.
+        """
+        try:
+            # Convert segments to turns format for NLP
+            turns = [
+                {
+                    'turn': idx,
+                    'speaker': seg.display_name if hasattr(seg, 'display_name') else seg.speaker_id,
+                    'text': seg.text,
+                    'timestamp_ms': seg.start_ms,
+                    'confidence': seg.confidence
+                }
+                for idx, seg in enumerate(validated_payload.segments)
+            ]
+
+            # Run NLP pipeline
+            nlp_result = await self.nlp_processor.process_conversation(
+                conversation_id=conversation.id,
+                turns=turns,
+                metadata={
+                    'job_id': job_id,
+                    'external_event_id': validated_payload.external_event_id,
+                    'date': validated_payload.meeting_metadata.scheduled_start.isoformat(),
+                    'language': validated_payload.primary_language or 'fr'
+                }
+            )
+
+            # Update conversation with NLP results
+            await self.storage.update_conversation_topics(
+                conversation.id,
+                topics=list(nlp_result.entities.get('PER', []))[:5]  # Top persons as topics
+            )
+
+            # Update job metadata with NLP stats
+            job.processing_metadata = {
+                'nlp_source': 'local_my_rag',
+                'num_chunks': nlp_result.num_chunks,
+                'num_embeddings': nlp_result.num_embeddings,
+                'num_persons': len(nlp_result.persons),
+                'avg_sentiment': nlp_result.sentiment_analysis['stats'].get('avg_stars'),
+                'nlp_processing_ms': nlp_result.processing_time_ms
+            }
+
+            logger.info(
+                f"[{job_id}] Local NLP complete: "
+                f"{nlp_result.num_chunks} chunks, "
+                f"{len(nlp_result.persons)} persons, "
+                f"sentiment: {nlp_result.sentiment_analysis['stats'].get('avg_stars'):.1f}"
+            )
+
+        except Exception as nlp_error:
+            logger.error(f"[{job_id}] Local NLP processing failed: {nlp_error}")
+            logger.error(traceback.format_exc())
+            # Set flag for partial NLP
+            job.processing_metadata = job.processing_metadata or {}
+            job.processing_metadata['nlp_partial'] = True
+            raise
 
 
 async def main():
