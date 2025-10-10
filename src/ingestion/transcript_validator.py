@@ -75,9 +75,11 @@ class Entity(BaseModel):
 
 
 class Sentiment(BaseModel):
-    """Sentiment from segment annotations"""
-    label: str = Field(regex="^(positive|neutral|negative|mixed)$")
+    """Sentiment from segment annotations (v1.1+)"""
+    label: str = Field(pattern="^(very_positive|positive|neutral|negative|very_negative|mixed)$")
     score: float = Field(ge=0, le=1)
+    stars: Optional[int] = Field(None, ge=1, le=5)
+    metadata: Optional[Dict[str, Any]] = None
 
 
 class SegmentAnnotations(BaseModel):
@@ -121,8 +123,8 @@ class ConversationPayload(BaseModel):
     Payload FINAL produit par transcript
     my-RAG ne fait QUE valider - PAS normaliser!
     """
-    schema_version: str = Field(regex=r"^\d+\.\d+$")
-    external_event_id: str = Field(min_length=4, max_length=128, regex=r"^[A-Za-z0-9._:-]+$")
+    schema_version: str = Field(pattern=r"^\d+\.\d+$")
+    external_event_id: str = Field(min_length=4, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")
     source_system: str = Field(min_length=1, max_length=64)
     created_at: datetime
 

@@ -17,8 +17,8 @@
   "properties": {
     "schema_version": {
       "type": "string",
-      "pattern": "^\\\\d+\\\\.\\\\d+$",
-      "description": "Semantic version (major.minor) of the payload schema."
+      "pattern": "^\\d+\\.\\d+$",
+      "description": "Semantic version (major.minor) of the payload schema. Current: 1.1"
     },
     "external_event_id": {
       "type": "string",
@@ -133,6 +133,11 @@
         "overlapping_speech": {
           "type": "boolean",
           "default": false
+        },
+        "nlp_partial": {
+          "type": "boolean",
+          "default": false,
+          "description": "True if NLP processing was incomplete or failed for some segments (v1.1+)"
         }
       },
       "additionalProperties": false
@@ -147,6 +152,100 @@
     "analytics": {
       "type": "object",
       "description": "Derived analytics such as topics, sentiment, diarization details; structure versioned per schema.",
+      "properties": {
+        "sentiment_summary": {
+          "type": "object",
+          "description": "Aggregated sentiment analysis for the entire conversation (v1.1+)",
+          "properties": {
+            "overall": {
+              "type": "string",
+              "enum": ["very_positive", "positive", "neutral", "negative", "very_negative"],
+              "description": "Overall sentiment for the conversation"
+            },
+            "distribution": {
+              "type": "object",
+              "description": "Percentage distribution of sentiments",
+              "properties": {
+                "very_positive": {"type": "number", "minimum": 0, "maximum": 1},
+                "positive": {"type": "number", "minimum": 0, "maximum": 1},
+                "neutral": {"type": "number", "minimum": 0, "maximum": 1},
+                "negative": {"type": "number", "minimum": 0, "maximum": 1},
+                "very_negative": {"type": "number", "minimum": 0, "maximum": 1}
+              },
+              "additionalProperties": false
+            },
+            "avg_stars": {
+              "type": "number",
+              "minimum": 1,
+              "maximum": 5,
+              "description": "Average star rating across all segments"
+            },
+            "timeline": {
+              "type": "array",
+              "description": "Sentiment evolution over time buckets",
+              "items": {
+                "type": "object",
+                "required": ["time_bucket_sec", "sentiment", "score"],
+                "properties": {
+                  "time_bucket_sec": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Time bucket in seconds from start"
+                  },
+                  "sentiment": {
+                    "type": "string",
+                    "enum": ["very_positive", "positive", "neutral", "negative", "very_negative"]
+                  },
+                  "score": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "entities_summary": {
+          "type": "object",
+          "description": "Aggregated named entities for the entire conversation (v1.1+)",
+          "properties": {
+            "PERSON": {
+              "type": "array",
+              "items": {"type": "string"},
+              "description": "Deduplicated list of person names"
+            },
+            "ORG": {
+              "type": "array",
+              "items": {"type": "string"},
+              "description": "Deduplicated list of organizations"
+            },
+            "LOC": {
+              "type": "array",
+              "items": {"type": "string"},
+              "description": "Deduplicated list of locations"
+            },
+            "DATE": {
+              "type": "array",
+              "items": {"type": "string"},
+              "description": "Deduplicated list of dates"
+            },
+            "TIME": {
+              "type": "array",
+              "items": {"type": "string"},
+              "description": "Deduplicated list of times"
+            },
+            "MONEY": {
+              "type": "array",
+              "items": {"type": "string"},
+              "description": "Deduplicated list of monetary amounts"
+            }
+          },
+          "additionalProperties": true
+        }
+      },
       "additionalProperties": true
     },
     "tags": {
@@ -322,26 +421,52 @@
             },
             "entities": {
               "type": "array",
+              "description": "Named entities extracted from this segment (optional, v1.1+)",
               "items": {
                 "$ref": "#/$defs/entity"
               }
             },
             "sentiment": {
               "type": "object",
+              "description": "Sentiment analysis result for this segment (optional, v1.1+)",
               "properties": {
                 "label": {
                   "type": "string",
                   "enum": [
+                    "very_positive",
                     "positive",
                     "neutral",
                     "negative",
+                    "very_negative",
                     "mixed"
-                  ]
+                  ],
+                  "description": "Sentiment classification label"
                 },
                 "score": {
                   "type": "number",
                   "minimum": 0,
-                  "maximum": 1
+                  "maximum": 1,
+                  "description": "Confidence score for the sentiment prediction"
+                },
+                "stars": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 5,
+                  "description": "Star rating representation (1=very negative, 5=very positive)"
+                },
+                "metadata": {
+                  "type": "object",
+                  "properties": {
+                    "model": {
+                      "type": "string",
+                      "description": "Model identifier (e.g., nlptown/bert-base-multilingual-uncased-sentiment)"
+                    },
+                    "version": {
+                      "type": "string",
+                      "description": "Model version for traceability"
+                    }
+                  },
+                  "additionalProperties": true
                 }
               },
               "required": [
@@ -362,6 +487,7 @@
     },
     "entity": {
       "type": "object",
+      "description": "Named entity extracted via NER (v1.1+)",
       "required": [
         "type",
         "text"
@@ -369,27 +495,50 @@
       "properties": {
         "type": {
           "type": "string",
-          "maxLength": 64
+          "enum": [
+            "PERSON",
+            "ORG",
+            "LOC",
+            "DATE",
+            "TIME",
+            "MONEY",
+            "MISC"
+          ],
+          "description": "Entity type classification"
         },
         "text": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Extracted entity text"
         },
         "start_char": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "description": "Character offset start position in segment text"
         },
         "end_char": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "description": "Character offset end position in segment text"
         },
         "confidence": {
           "type": "number",
           "minimum": 0,
-          "maximum": 1
+          "maximum": 1,
+          "description": "NER model confidence score"
         },
         "metadata": {
           "type": "object",
+          "properties": {
+            "model": {
+              "type": "string",
+              "description": "NER model identifier (e.g., Jean-Baptiste/camembert-ner)"
+            },
+            "normalized_form": {
+              "type": "string",
+              "description": "Normalized entity text"
+            }
+          },
           "additionalProperties": true
         }
       },

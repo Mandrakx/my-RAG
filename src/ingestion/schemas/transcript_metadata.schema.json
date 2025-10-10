@@ -1,0 +1,47 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": [
+    "job_id",
+    "timestamp"
+  ],
+  "properties": {
+    "job_id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9-_]+$",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "audio_filename": {
+      "type": "string",
+      "minLength": 1
+    },
+    "duration_seconds": {
+      "type": "number",
+      "minimum": 0
+    },
+    "language": {
+      "type": "string",
+      "enum": [
+        "fr",
+        "en",
+        "es",
+        "de",
+        "it",
+        "pt"
+      ]
+    },
+    "model_version": {
+      "type": "string"
+    },
+    "source": {
+      "type": "string",
+      "default": "transcript-service"
+    }
+  },
+  "additionalProperties": true
+}

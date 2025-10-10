@@ -1,0 +1,43 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": [
+    "job_id",
+    "bucket",
+    "object_key"
+  ],
+  "properties": {
+    "job_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "bucket": {
+      "type": "string",
+      "minLength": 1
+    },
+    "object_key": {
+      "type": "string",
+      "minLength": 1
+    },
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "put",
+        "delete",
+        "copy"
+      ]
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "file_size": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "content_type": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": true
+}
