@@ -58,7 +58,42 @@ Adopt a shared cross-project contract covering identifiers, metadata, payload fo
    - Transcript persists the structure unchanged (`Job.metadata`) and passes it to workers. Optional checksum `checksum_sha256` should be provided when available.
    - **Validation**: Soft validation on receipt (warn on missing recommended fields); strict validation in worker before packaging.
    - **External Event ID format**: `rec-<ISO8601 timestamp>-<short UUID>` (e.g., `rec-20251003T091500Z-3f9c4241`).
+     - Pattern: `^rec-\d{8}T\d{6}Z-[a-f0-9]{8}$`
+     - Example breakdown: `rec-20251003T091500Z-3f9c4241`
+       - `rec-` prefix (constant)
+       - `20251003T091500Z` (ISO 8601 compact format: YYYYMMDDTHHMMSSZ)
+       - `-` separator
+       - `3f9c4241` (8 lowercase hexadecimal characters from UUID)
    - **Optional fields**: `gps` (if permission denied), `place_name` (if reverse geocoding unavailable), `user_note` (if empty), `participants_hint` (if not provided during capture).
+
+   **Field Requirements:**
+
+   | Field | Required | Type | Validation | Notes |
+   |-------|----------|------|------------|-------|
+   | `external_event_id` | ✅ Yes | string | Pattern: `^rec-\d{8}T\d{6}Z-[a-f0-9]{8}$` | Stable event ID generated on device |
+   | `recorded_at_iso` | ✅ Yes | string | ISO 8601 format | Recording start timestamp |
+   | `timezone` | ✅ Yes | string | IANA timezone ID | e.g., "Europe/Paris", "America/New_York" |
+   | `trace_id` | ✅ Yes | string | Valid UUID v4 | For distributed tracing |
+   | `device.model` | ✅ Yes | string | - | iOS device model (e.g., "iPhone16,2") |
+   | `device.os_version` | ✅ Yes | string | - | iOS version (e.g., "18.0") |
+   | `device.app_version` | ✅ Yes | string | - | App version (e.g., "0.8.0") |
+   | `capture.language` | ✅ Yes | string | ISO 639-1 code | e.g., "fr", "en" |
+   | `capture.duration_ms` | ✅ Yes | integer | > 0 | Audio duration in milliseconds |
+   | `capture.file_size_bytes` | ✅ Yes | integer | > 0 | Audio file size in bytes |
+   | `capture.gps` | ❌ Optional | object | - | If location permission granted |
+   | `capture.gps.lat` | ✅ (if gps) | float | -90 to 90 | Latitude |
+   | `capture.gps.lon` | ✅ (if gps) | float | -180 to 180 | Longitude |
+   | `capture.gps.accuracy_m` | ✅ (if gps) | float | > 0 | Horizontal accuracy in meters |
+   | `capture.place_name` | ❌ Optional | string | - | Reverse geocoded place name |
+   | `capture.on_device_transcription` | ❌ Optional | boolean | - | Whether on-device transcription was used |
+   | `participants_hint` | ❌ Optional | array | - | User-provided participant hints |
+   | `participants_hint[].display_name` | ✅ (if provided) | string | - | Participant display name |
+   | `participants_hint[].role` | ❌ Optional | string | - | e.g., "client", "consultant" |
+   | `user_note` | ❌ Optional | string | - | Free-text note from user |
+
+   **Implementation Reference:**
+   - Pydantic validation schema: `transcript/server/metadata_schema.py` (classes `MetadataEnvelope`, `DeviceInfo`, `CaptureInfo`)
+   - The backend uses Pydantic for automatic validation with detailed error messages on schema violations
 
 3. **Transcript Normalisation**
    - Whisper pipeline outputs segments conforming to `conversation-payload.schema.json`:
