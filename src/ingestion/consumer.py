@@ -137,58 +137,99 @@ class RedisStreamConsumer:
             if message.retry_count > 0:
                 IngestionMetrics.record_retry(message.retry_count)
 
-            # Create ingestion job in database
+            # Step 2: Check for duplicate and create/update job
             db = clients.get_db_session()
 
-            # Check if job already exists
-            existing_job = db.query(IngestionJob).filter_by(job_id=job_id).first()
+            # Check if job already exists by external_event_id
+            existing_job = db.query(IngestionJob).filter_by(external_event_id=external_event_id).first()
             if existing_job:
                 if existing_job.status == IngestionStatus.COMPLETED.value:
-                    logger.info(f"Job {job_id} already completed, skipping")
+                    logger.info(f"{log_prefix} Already completed (duplicate), skipping")
+                    IngestionMetrics.record_success()
                     return True
                 elif existing_job.status == IngestionStatus.FAILED.value and existing_job.retry_count >= self.config.max_retries:
-                    logger.warning(f"Job {job_id} already failed max retries, skipping")
+                    logger.warning(f"{log_prefix} Already failed max retries, skipping")
                     return False
 
                 # Update existing job for retry
                 job = existing_job
                 job.status = IngestionStatus.DOWNLOADING.value
-                job.retry_count += 1
+                job.retry_count = message.retry_count
                 job.started_at = datetime.utcnow()
+                job.trace_id = trace_id
+                job.checksum = message.checksum
+                job.schema_version = message.schema_version
             else:
                 # Create new job
                 job = IngestionJob(
-                    job_id=job_id,
+                    job_id=external_event_id,  # Use external_event_id as job_id
+                    external_event_id=external_event_id,
                     source_bucket=bucket,
                     source_key=object_key,
                     status=IngestionStatus.DOWNLOADING.value,
-                    started_at=datetime.utcnow()
+                    started_at=datetime.utcnow(),
+                    trace_id=trace_id,
+                    checksum=message.checksum,
+                    schema_version=message.schema_version,
+                    retry_count=message.retry_count
                 )
                 db.add(job)
 
+            context.job_id = job.job_id
             db.commit()
 
-            # Step 1: Download from MinIO
-            logger.info(f"[{job_id}] Downloading from MinIO: {bucket}/{object_key}")
-            transcript_data = await self.storage.download_transcript(bucket, object_key)
+            # Step 3: Download from MinIO with timing
+            logger.info(f"{log_prefix} Downloading from MinIO: {bucket}/{object_key}")
+            with IngestionMetrics.time_processing():
+                transcript_data = await self.storage.download_transcript(bucket, object_key)
 
             if not transcript_data:
                 raise Exception("Failed to download transcript from MinIO")
+
+            # Record download size
+            if 'file_size' in transcript_data:
+                IngestionMetrics.record_download_size(transcript_data['file_size'])
+
+            # Step 4: Verify tar.gz checksum
+            if transcript_data.get('tarball_path'):
+                logger.info(f"{log_prefix} Validating tar.gz checksum")
+                with IngestionMetrics.time_checksum_validation():
+                    ChecksumValidator.verify_tarball(
+                        transcript_data['tarball_path'],
+                        message.checksum
+                    )
+                    logger.info(f"{log_prefix} ✓ Tar.gz checksum verified")
 
             # Update status
             job.status = IngestionStatus.NORMALIZING.value  # Actually "VALIDATING"
             db.commit()
 
-            # Step 2: VALIDATE (not normalize!) - transcript provides FINAL format
-            logger.info(f"[{job_id}] Validating conversation.json from transcript")
+            # Step 5: Validate conversation.json
+            logger.info(f"{log_prefix} Validating conversation.json from transcript")
 
             # Extract conversation.json from tar.gz
             conversation_json = transcript_data.get('conversation.json')
             if not conversation_json:
                 raise Exception("Missing conversation.json in transcript package")
 
-            # Validate against schema (strict!)
-            validated_payload = validate_conversation_from_transcript(conversation_json)
+            # Validate against schema (strict!) with timing
+            with IngestionMetrics.time_validation():
+                validated_payload = validate_conversation_from_transcript(conversation_json)
+
+            # Step 6: Verify internal checksums (checksums.sha256)
+            if transcript_data.get('extracted_dir'):
+                logger.info(f"{log_prefix} Validating internal checksums.sha256")
+                with IngestionMetrics.time_checksum_validation():
+                    from pathlib import Path
+                    extracted_path = Path(transcript_data['extracted_dir']) / 'extracted'
+                    ChecksumValidator.verify_archive_checksums(extracted_path)
+                    logger.info(f"{log_prefix} ✓ All internal files verified")
+
+            # Record conversation metrics
+            IngestionMetrics.record_conversation_metrics(
+                num_segments=len(validated_payload.segments),
+                num_participants=len(validated_payload.participants)
+            )
 
             logger.info(
                 f"[{job_id}] Validation passed: {validated_payload.external_event_id}, "
@@ -209,9 +250,10 @@ class RedisStreamConsumer:
 
             logger.info(f"[{job_id}] Conversation created: {conversation.id}")
 
-            # Step 4: NLP Processing (HYBRID: consume upstream or fallback to local)
+            # Step 7: NLP Processing (HYBRID: consume upstream or fallback to local)
             nlp_mode = self._detect_nlp_mode(conversation_json)
-            logger.info(f"[{job_id}] NLP mode: {nlp_mode}")
+            logger.info(f"{log_prefix} NLP mode: {nlp_mode}")
+            IngestionMetrics.record_nlp_mode(nlp_mode)
 
             if nlp_mode == 'enriched':
                 # v1.1: Consume upstream NLP annotations
@@ -251,20 +293,40 @@ class RedisStreamConsumer:
 
             db.commit()
 
-            logger.info(f"[{job_id}] Ingestion completed successfully")
+            # Record success metrics
+            IngestionMetrics.record_success()
+            processing_time = time.time() - start_time
+            IngestionMetrics.record_ack_latency(processing_time)
+
+            logger.info(
+                f"{log_prefix} Ingestion completed successfully in {processing_time:.2f}s"
+            )
             return True
 
         except Exception as e:
-            logger.error(f"[{job_id}] Error processing message: {e}")
+            logger.error(f"Error processing message: {e}")
             logger.error(traceback.format_exc())
+
+            # Classify and handle error
+            error_code = self.error_handler.classify_exception(e)
+            IngestionMetrics.record_failure(error_code.value)
+
+            # Publish to DLQ
+            if context:
+                self.error_handler.handle_error(
+                    exception=e,
+                    original_message=message_data,
+                    context=context
+                )
 
             # Update job with error
             try:
                 db = clients.get_db_session()
-                if job_id:
-                    job = db.query(IngestionJob).filter_by(job_id=job_id).first()
+                if external_event_id:
+                    job = db.query(IngestionJob).filter_by(external_event_id=external_event_id).first()
                     if job:
                         job.status = IngestionStatus.FAILED.value
+                        job.error_code = error_code.value  # NEW: Standardized error code
                         job.error_message = str(e)
                         job.error_stack = traceback.format_exc()
                         job.last_error_at = datetime.utcnow()

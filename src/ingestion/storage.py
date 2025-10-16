@@ -361,3 +361,153 @@ class IngestionStorage:
         if conversation:
             conversation.main_topics = topics
             db.commit()
+
+    async def store_conversation_from_transcript(
+        self,
+        payload: Any,
+        source_metadata: Dict[str, Any]
+    ) -> Conversation:
+        """
+        Store conversation from validated transcript payload
+
+        Args:
+            payload: Validated ConversationPayload from transcript
+            source_metadata: Source metadata (trace_id, checksum, etc.)
+
+        Returns:
+            Created Conversation object
+        """
+        try:
+            db = clients.get_db_session()
+
+            # Extract meeting metadata
+            meeting_meta = payload.meeting_metadata
+
+            # Build full transcript text
+            transcript_lines = []
+            for seg in payload.segments:
+                # Find participant display_name from speaker_id
+                participant = next(
+                    (p for p in payload.participants if p.speaker_id == seg.speaker_id),
+                    None
+                )
+                speaker_name = participant.display_name if participant else seg.speaker_id
+                transcript_lines.append(f"{speaker_name}: {seg.text}")
+
+            full_transcript = '\n'.join(transcript_lines)
+
+            # Calculate duration
+            duration_sec = meeting_meta.duration_sec
+            if not duration_sec and meeting_meta.end_at:
+                delta = meeting_meta.end_at - meeting_meta.scheduled_start
+                duration_sec = int(delta.total_seconds())
+
+            duration_minutes = int(duration_sec / 60) if duration_sec else None
+
+            # Extract location if present
+            location_gps = None
+            location_name = None
+            if meeting_meta.location:
+                location_gps = {
+                    'lat': meeting_meta.location.lat,
+                    'lon': meeting_meta.location.lon
+                }
+                location_name = meeting_meta.location.display_name
+
+            # Build participants list
+            participants_list = [
+                {
+                    'speaker_id': p.speaker_id,
+                    'display_name': p.display_name,
+                    'email': p.email,
+                    'role': p.role,
+                    'company': p.company
+                }
+                for p in payload.participants
+            ]
+
+            # Create conversation
+            conversation = Conversation(
+                title=meeting_meta.title or self._generate_title_from_segments(payload.segments, participants_list),
+                date=meeting_meta.scheduled_start,
+                duration_minutes=duration_minutes,
+                language=payload.primary_language or 'fr',
+                conversation_type=self._infer_conversation_type(participants_list, {}),
+                interaction_type='professional',
+                transcript=full_transcript,
+                participants=participants_list,
+                tags=payload.tags or [],
+                main_topics=[],  # Will be populated by NLP processing
+                confidence_score=self._calculate_avg_confidence(payload.segments),
+                location_name=location_name,
+                location_gps=location_gps,
+                qdrant_collection=self.config.qdrant_collection,
+                user_id=source_metadata.get('user_id')
+            )
+
+            db.add(conversation)
+            db.flush()  # Get conversation.id
+
+            # Create turns from segments
+            for idx, seg in enumerate(payload.segments):
+                participant = next(
+                    (p for p in payload.participants if p.speaker_id == seg.speaker_id),
+                    None
+                )
+                speaker_name = participant.display_name if participant else seg.speaker_id
+
+                turn = ConversationTurn(
+                    conversation_id=conversation.id,
+                    turn_index=idx,
+                    speaker=speaker_name,
+                    text=seg.text,
+                    timestamp_ms=seg.start_ms
+                )
+                db.add(turn)
+
+            db.commit()
+            db.refresh(conversation)
+
+            logger.info(
+                f"Stored conversation {conversation.id} from transcript: "
+                f"{len(payload.segments)} segments, {len(payload.participants)} participants"
+            )
+            return conversation
+
+        except Exception as e:
+            logger.error(f"Error storing conversation from transcript: {e}")
+            db.rollback()
+            raise
+
+    def _generate_title_from_segments(self, segments: list, participants: list) -> str:
+        """Generate conversation title from first segment"""
+        if not segments:
+            return "Untitled Conversation"
+
+        # Use first few words
+        first_text = segments[0].text
+        words = first_text.split()[:7]
+        title = ' '.join(words)
+
+        if len(first_text.split()) > 7:
+            title += '...'
+
+        # Add participants info
+        if len(participants) == 2:
+            names = [p['display_name'] for p in participants[:2]]
+            title = f"{names[0]} & {names[1]}: {title}"
+        elif len(participants) > 2:
+            title = f"Group ({len(participants)}): {title}"
+
+        return title[:200]
+
+    def _calculate_avg_confidence(self, segments: list) -> float:
+        """Calculate average confidence from segments"""
+        if not segments:
+            return 1.0
+
+        confidences = [seg.confidence for seg in segments if seg.confidence is not None]
+        if not confidences:
+            return 1.0
+
+        return sum(confidences) / len(confidences)
