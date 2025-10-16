@@ -1,0 +1,56 @@
+# Prometheus configuration for my-RAG ingestion monitoring
+# Scrapes metrics from ingestion service for ADR-2025-10-16-004 observability
+
+global:
+  scrape_interval: 15s  # Scrape every 15 seconds
+  evaluation_interval: 15s  # Evaluate rules every 15 seconds
+  external_labels:
+    cluster: 'my-rag'
+    environment: 'development'
+
+# Alertmanager configuration (optional)
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets: ['alertmanager:9093']
+
+# Rule files
+# rule_files:
+#   - "alerts/*.yml"
+
+# Scrape configurations
+scrape_configs:
+  # Scrape ingestion service metrics
+  - job_name: 'my-rag-ingestion'
+    static_configs:
+      - targets: ['app:8000']  # Assumes metrics exposed at /metrics on port 8000
+    metrics_path: '/metrics'
+    scrape_interval: 10s  # More frequent for ingestion metrics
+    scrape_timeout: 5s
+
+  # Scrape Prometheus itself
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Scrape PostgreSQL exporter (if enabled)
+  # - job_name: 'postgres'
+  #   static_configs:
+  #     - targets: ['postgres-exporter:9187']
+
+  # Scrape Redis exporter (if enabled)
+  # - job_name: 'redis'
+  #   static_configs:
+  #     - targets: ['redis-exporter:9121']
+
+  # Scrape MinIO metrics (if enabled)
+  # - job_name: 'minio'
+  #   static_configs:
+  #     - targets: ['minio:9000']
+  #   metrics_path: '/minio/v2/metrics/cluster'
+
+  # Scrape Qdrant metrics (if enabled)
+  # - job_name: 'qdrant'
+  #   static_configs:
+  #     - targets: ['qdrant:6333']
+  #   metrics_path: '/metrics'
