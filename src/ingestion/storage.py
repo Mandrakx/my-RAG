@@ -5,6 +5,9 @@ Handles MinIO and PostgreSQL persistence
 
 import json
 import logging
+import tempfile
+import tarfile
+from pathlib import Path
 from typing import Dict, Any, Optional
 from datetime import datetime
 from io import BytesIO
@@ -31,52 +34,109 @@ class IngestionStorage:
 
     async def download_transcript(self, bucket: str, object_key: str) -> Dict[str, Any]:
         """
-        Download transcript from MinIO
+        Download and extract transcript archive from MinIO
+
+        Handles tar.gz archives per ADR-2025-10-03-003 contract.
 
         Args:
             bucket: MinIO bucket name
             object_key: Object key
 
         Returns:
-            Transcript data as dict
+            Dict with:
+                - conversation.json: Parsed conversation data
+                - metadata: Archive metadata
+                - tarball_path: Path to downloaded tar.gz (for checksum validation)
+                - extracted_dir: Path to extracted directory (for internal checksum validation)
+                - file_size: Size of downloaded file in bytes
         """
         try:
             logger.info(f"Downloading from MinIO: {bucket}/{object_key}")
 
-            # Download object
+            # Download object to temporary file
             response = self.minio.get_object(bucket, object_key)
             data = response.read()
             response.close()
             response.release_conn()
 
-            # Handle different file types
-            if object_key.endswith('.gz'):
-                # Decompress gzip
-                data = gzip.decompress(data)
+            file_size = len(data)
+            logger.info(f"Downloaded {file_size} bytes")
 
-            if object_key.endswith('.json') or object_key.endswith('.json.gz'):
-                # Parse JSON
+            # Handle tar.gz archives (primary format per contract)
+            if object_key.endswith('.tar.gz'):
+                # Save to temporary file for checksum validation
+                temp_dir = Path(tempfile.mkdtemp(prefix='my-rag-ingestion-'))
+                tarball_path = temp_dir / Path(object_key).name
+
+                with open(tarball_path, 'wb') as f:
+                    f.write(data)
+
+                logger.info(f"Saved tarball to {tarball_path}")
+
+                # Extract archive
+                extracted_dir = temp_dir / 'extracted'
+                extracted_dir.mkdir()
+
+                with tarfile.open(tarball_path, 'r:gz') as tar:
+                    # Extract all files
+                    tar.extractall(path=extracted_dir)
+
+                    # List extracted files for debugging
+                    members = tar.getmembers()
+                    logger.info(f"Extracted {len(members)} files from archive")
+
+                # Find conversation.json (should be in root of external_event_id folder)
+                conversation_json_path = None
+                for item in extracted_dir.rglob('conversation.json'):
+                    conversation_json_path = item
+                    break
+
+                if not conversation_json_path:
+                    raise FileNotFoundError("conversation.json not found in archive")
+
+                # Parse conversation.json
+                with open(conversation_json_path, 'r', encoding='utf-8') as f:
+                    conversation_data = json.load(f)
+
+                logger.info(f"Loaded conversation.json from {conversation_json_path}")
+
+                # Build metadata
+                metadata = {
+                    'source_bucket': bucket,
+                    'source_key': object_key,
+                    'downloaded_at': datetime.utcnow().isoformat(),
+                    'archive_size_bytes': file_size
+                }
+
+                return {
+                    'conversation.json': conversation_data,
+                    'metadata': metadata,
+                    'tarball_path': tarball_path,  # For checksum validation
+                    'extracted_dir': extracted_dir.parent,  # Parent contains both tarball and extracted/
+                    'file_size': file_size
+                }
+
+            # Fallback for legacy formats (JSON, JSON.gz)
+            elif object_key.endswith('.json') or object_key.endswith('.json.gz'):
+                if object_key.endswith('.gz'):
+                    data = gzip.decompress(data)
+
                 transcript = json.loads(data.decode('utf-8'))
-            elif object_key.endswith('.tar.gz'):
-                # Extract from tar.gz (assume transcript.json inside)
-                import tarfile
-                tar_buffer = BytesIO(data)
-                with tarfile.open(fileobj=tar_buffer, mode='r:gz') as tar:
-                    # Look for transcript.json or similar
-                    for member in tar.getmembers():
-                        if member.name.endswith('.json') and 'transcript' in member.name.lower():
-                            file_obj = tar.extractfile(member)
-                            if file_obj:
-                                transcript = json.loads(file_obj.read().decode('utf-8'))
-                                break
-                    else:
-                        raise Exception("No transcript.json found in tar.gz")
+
+                return {
+                    'conversation.json': transcript,
+                    'metadata': {
+                        'source_bucket': bucket,
+                        'source_key': object_key,
+                        'downloaded_at': datetime.utcnow().isoformat()
+                    },
+                    'tarball_path': None,
+                    'extracted_dir': None,
+                    'file_size': file_size
+                }
+
             else:
-                # Try parsing as JSON
-                transcript = json.loads(data.decode('utf-8'))
-
-            logger.info(f"Successfully downloaded transcript: {len(data)} bytes")
-            return transcript
+                raise ValueError(f"Unsupported file format: {object_key}")
 
         except Exception as e:
             logger.error(f"Error downloading from MinIO: {e}")

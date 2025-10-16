@@ -5,6 +5,7 @@ Redis Streams consumer for ingestion events
 import asyncio
 import logging
 import json
+import time
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 import traceback
@@ -14,6 +15,10 @@ from .models import IngestionJob, IngestionStatus
 from .transcript_validator import validate_conversation_from_transcript
 from .storage import IngestionStorage
 from .schemas import SchemaValidator
+from .redis_message_parser import RedisMessageParser, AudioIngestionMessage
+from .checksum_validator import ChecksumValidator
+from .error_handler import ErrorHandler, ErrorContext, ErrorCode
+from .metrics import IngestionMetrics
 
 # Import NLP processor
 try:
@@ -39,6 +44,12 @@ class RedisStreamConsumer:
         self.running = False
         # NO normalizer - transcript provides FINAL format!
         self.storage = IngestionStorage(self.config)
+
+        # Initialize error handler with DLQ
+        self.error_handler = ErrorHandler(
+            redis_client=self.redis,
+            dlq_stream=self.config.redis_dlq_stream
+        )
 
         # Initialize NLP processor if available
         self.nlp_processor = None
@@ -82,25 +93,49 @@ class RedisStreamConsumer:
 
         Args:
             message_id: Redis stream message ID
-            message_data: Message payload
+            message_data: Message payload (bytes dict from Redis)
 
         Returns:
             True if processing succeeded, False otherwise
         """
-        job_id = None
+        start_time = time.time()
+        external_event_id = None
+        trace_id = None
+        context = None
+
         try:
-            # Parse message data
-            job_id = message_data.get(b'job_id', b'').decode('utf-8')
-            bucket = message_data.get(b'bucket', b'').decode('utf-8')
-            object_key = message_data.get(b'object_key', b'').decode('utf-8')
-            event_type = message_data.get(b'event_type', b'put').decode('utf-8')
-            timestamp_str = message_data.get(b'timestamp', b'').decode('utf-8')
+            # Step 1: Parse and validate Redis message (NEW FORMAT)
+            message = RedisMessageParser.parse(message_data)
+            external_event_id = message.external_event_id
+            trace_id = message.get_trace_id()
 
-            logger.info(f"Processing ingestion event: job_id={job_id}, bucket={bucket}, key={object_key}")
+            # Record trace_id presence
+            IngestionMetrics.record_trace_id_presence(trace_id is not None)
 
-            if not job_id or not bucket or not object_key:
-                logger.error(f"Invalid message data: {message_data}")
-                return False
+            # Parse package_uri
+            bucket, object_key = message.parse_package_uri()
+
+            # Create error context for DLQ
+            context = ErrorContext(
+                external_event_id=external_event_id,
+                trace_id=trace_id,
+                package_uri=message.package_uri,
+                retry_count=message.retry_count
+            )
+
+            # Log with trace_id
+            log_prefix = f"[{external_event_id}]"
+            if trace_id:
+                log_prefix = f"[{external_event_id}][trace_id={trace_id}]"
+
+            logger.info(
+                f"{log_prefix} Processing ingestion event: "
+                f"bucket={bucket}, key={object_key}, retry={message.retry_count}"
+            )
+
+            # Record retry metrics
+            if message.retry_count > 0:
+                IngestionMetrics.record_retry(message.retry_count)
 
             # Create ingestion job in database
             db = clients.get_db_session()

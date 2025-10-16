@@ -82,13 +82,14 @@ Detailed cross-team requirements are tracked in `docs/design/cross-cutting-conce
 Payload schema below applies to either mode.
 
 ### Payload schema (JSON)
-- `external_event_id` (string, required): stable identifier per conversation to avoid duplicates.
-- `source_system` (string, required): e.g., "audio-pipeline-v1".
+- `external_event_id` (string, required): stable identifier per conversation to avoid duplicates. Format: `rec-<ISO8601>-<UUID>` (e.g., `rec-20251003T091500Z-3f9c4241`).
+- `source_system` (string, required): e.g., "transcript-pipeline-v1".
 - `created_at` (ISO 8601, required).
 - `meeting_metadata` (object): `title`, `scheduled_start`, `duration_sec`, `location` (GPS lat/lon + display_name), `participants` (array of {`speaker_id`, `display_name`, `email`, `role`} ).
-- `transcript` (array ordered by time): items with `segment_id`, `speaker_id`, `start_ms`, `end_ms`, `text`, `confidence`.
+- `segments` (array ordered by time): items with `segment_id`, `speaker_id`, `start_ms`, `end_ms`, `text`, `language`, `confidence`, optional `annotations` (sentiment, entities, topics).
 - `attachments` (object, optional): `audio_uri`, `notes_uri`, `calendar_uri` pointing to MinIO/S3 keys.
-- `quality_flags` (object): `missing_audio`, `low_confidence`, `overlapping_speech`, `language`.
+- `quality_flags` (object): `missing_audio`, `low_confidence`, `overlapping_speech`, `nlp_partial`.
+- `analytics` (object, optional): `sentiment_summary`, `entities_summary` for conversation-level insights (v1.1+).
 
 ### REST contract specifics
 - Request headers: `Authorization: Bearer <token>`, `Content-Type: application/json`, optional `Idempotency-Key` matching `external_event_id`.
@@ -98,7 +99,8 @@ Payload schema below applies to either mode.
 
 ### Drop folder contract specifics
 - Transcript package archived as tar.gz containing `conversation.json` plus optional media files; naming convention `<external_event_id>.tar.gz`.
-- Notification message payload: `{ "external_event_id": "...", "package_uri": "minio://...", "checksum": "sha256:..." }`.
+  - Example: `rec-20251003T091500Z-3f9c4241.tar.gz`
+- Notification message payload: `{ "external_event_id": "rec-20251003T091500Z-3f9c4241", "package_uri": "minio://...", "checksum": "sha256:...", "schema_version": "1.1", "metadata": {"trace_id": "550e8400-..."} }`.
 - Ingestion service tracks processed ids in Redis set to prevent duplicate pulls; errors push to `audio.ingestion.deadletter` with reason code.
 
 ### Error handling and retries

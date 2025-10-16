@@ -119,10 +119,40 @@ Adopt a shared cross-project contract covering identifiers, metadata, payload fo
 
 5. **Security & Observability**
    - **API Protocol**: HTTPS/REST with multipart upload (FastAPI `/v1/jobs` endpoint). Presigned S3/R2 URLs for direct object storage upload.
-   - **Authentication**: `Authorization: ApiKey <token>` from device (stored in iOS Keychain), rotate quarterly. Enforce TLS 1.3 minimum and request rate limits (`429` on abuse).
-   - **Certificate Pinning** (recommended): iOS clients should validate transcript API certificate to prevent MITM attacks.
+
+   - **Authentication**:
+     - **Provider**: fastapi_simple_security for API key management
+     - **Storage Backend**: SQLite database (`data/api_keys.sqlite3`)
+     - **Header Format**: `Authorization: ApiKey <token>`
+     - **Client Storage**: Keys stored in iOS Keychain with biometric protection
+     - **Expiration**: Non-expiring by default (configurable with `never_expires` parameter)
+     - **Rotation**: Manual rotation via `GET /auth/renew` endpoint (old key automatically revoked)
+     - **Revocation**: Immediate invalidation via `GET /auth/revoke` endpoint
+     - **Key Management Endpoints** (all use GET method):
+       - `GET /auth/new?never_expires=true` - Create new API key
+       - `GET /auth/revoke?api_key=<key>` - Revoke existing key
+       - `GET /auth/renew?never_expires=true` - Rotate key (old key revoked)
+       - `GET /auth/logs` - View API key usage logs
+     - **Rate Limits**: 5 authentication operations per minute per device
+     - See ADR-2025-10-16-006 for complete authentication architecture
+
+   - **Security Headers** (applied to all responses via middleware):
+     - `Strict-Transport-Security: max-age=31536000; includeSubDomains` - Force HTTPS
+     - `X-Content-Type-Options: nosniff` - Prevent MIME sniffing
+     - `X-Frame-Options: DENY` - Prevent clickjacking
+     - `X-XSS-Protection: 1; mode=block` - XSS filtering
+     - `Content-Security-Policy: default-src 'self'` - Restrict resource loading
+     - `Referrer-Policy: strict-origin-when-cross-origin` - Control referrer info
+
+   - **Transport Security**:
+     - Enforce TLS 1.3 minimum
+     - **Certificate Pinning** (recommended): iOS clients should validate transcript API certificate to prevent MITM attacks
+     - Request rate limits enforced (`429` response on abuse)
+
    - **Webhooks** (optional): HMAC SHA-256 with `X-Timestamp`, `X-Signature`, `X-Delivery-Id`; receivers validate freshness ±5 min.
+
    - **Logs/metrics**: structured JSON including `external_event_id`, `trace_id`, durations, payload sizes, retry counts. Prometheus counters align with RAG ingestion (`audio_ingest_ack_latency_seconds`, `audio_ingest_failures_total`, etc.).
+
    - **Errors**: use shared catalogue (`validation_error`, `checksum_mismatch`, `processing_failure`, `payload_expired`, ...). DLQ messages include `external_event_id` and remediation hints.
 
 6. **API Protocol Specification (iOS ↔ Transcript)**
@@ -388,17 +418,39 @@ Adopt a shared cross-project contract covering identifiers, metadata, payload fo
 1. Create `MetadataEnvelope.swift` model matching section 2 structure
 2. Extend `RecordingData` with missing fields (`externalEventId`, `timezone`, `deviceInfo`, `traceId`)
 3. Improve GPS capture: parse "lat,lon" to structured object, add accuracy
-4. Implement `TranscriptAPIClient.swift`:
-   - `POST /v1/jobs` with metadata envelope
-   - Multipart upload using presigned URLs
-   - Polling `GET /v1/jobs/{job_id}` for status
-   - Store ApiKey in Keychain
-5. Update `RecordingModel.swift` to persist API job status
+4. Implement `APIKeyManager.swift`:
+   - Store/retrieve API keys from iOS Keychain with biometric protection
+   - Track key expiration and trigger renewal notifications
+   - Handle key rotation with grace period
+5. Implement `TranscriptAPIClient.swift`:
+   - Authentication: `Authorization: ApiKey <token>` header
+   - `GET /auth/new?never_expires=true` - Create new API key (initial setup)
+   - `GET /auth/renew?never_expires=true` - Rotate key periodically (recommended every 90 days)
+   - `GET /auth/revoke?api_key=<key>` - Revoke compromised key
+   - `GET /auth/logs` - Monitor API key usage
+   - `POST /v1/jobs/init` - Initialize upload with presigned URL
+   - `PUT <presigned_url>` - Upload audio to S3/R2
+   - `POST /v1/jobs/{job_id}/commit` - Commit job for processing
+   - `POST /v1/jobs` - Direct multipart upload (fallback)
+   - `GET /v1/jobs/{job_id}` - Poll for status
+   - Error handling with exponential backoff retry
+6. Update `RecordingModel.swift` to persist API job status and key metadata
 
-**Phase 2: Backend (transcript)** [Priority: MEDIUM]
-1. Add soft validation for `Job.metadata` against envelope schema (log warnings)
-2. Document expected metadata structure in API spec
-3. Update worker to map `Job.metadata` → `conversation.json`:
+**Phase 2: Backend (transcript)** [Priority: MEDIUM - COMPLETED 2025-10-16]
+1. ✅ Implement fastapi_simple_security authentication integration (`server/auth.py`)
+   - SQLite database storage for API keys (`data/api_keys.sqlite3`)
+   - `GET /auth/new` - Create API keys (non-expiring by default)
+   - `GET /auth/revoke` - Revoke keys immediately
+   - `GET /auth/renew` - Rotate keys (old key automatically revoked)
+   - `GET /auth/logs` - View API key usage logs
+   - API key verification dependency with request-level validation
+2. ✅ Add security headers middleware (`server/security_headers.py`)
+   - HSTS, CSP, X-Frame-Options, X-Content-Type-Options, etc.
+3. ✅ Update OpenAPI specification with authentication endpoints
+4. ✅ Add comprehensive documentation (API_KEY_SETUP.md, IOS_AUTHENTICATION_SPEC.md, MIGRATION_GUIDE.md)
+5. ✅ Add soft validation for `Job.metadata` against envelope schema (log warnings)
+6. ✅ Document expected metadata structure in API spec
+7. ⏳ Update worker to map `Job.metadata` → `conversation.json`:
    - `metadata.device` → `metadata.device` (passthrough)
    - `metadata.capture.gps` → `meeting_metadata.location`
    - `metadata.participants_hint` → `participants[]`
@@ -431,7 +483,11 @@ Adopt a shared cross-project contract covering identifiers, metadata, payload fo
 - ✅ Establishes a governance loop for schema evolution to prevent breaking changes.
 
 ## References
-- `my-RAG/docs/api/transcript-api.openapi.yaml` — Complete OpenAPI 3.0 specification
+- `docs/api/transcript-api.openapi.yaml` — Complete OpenAPI 3.0 specification
+- `docs/adr/ADR-2025-10-16-006-authentication-authorization-architecture.md` — Authentication & authorization architecture
+- `docs/API_KEY_SETUP.md` — API key setup guide
+- `docs/IOS_AUTHENTICATION_SPEC.md` — iOS authentication implementation specification
+- `docs/MIGRATION_GUIDE.md` — Migration guide for authentication changes
 - `transcript/docs/spec/Iphone-app-spec.md`
 - `transcript/workers/transcriber/app.py`
 - `my-RAG/docs/design/cross-cutting-concern.md`

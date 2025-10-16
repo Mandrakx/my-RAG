@@ -23,11 +23,12 @@ class IngestionConfig(BaseSettings):
     minio_bucket_results: str = Field(default="results", env="MINIO_BUCKET_RESULTS")
     minio_bucket_archive: str = Field(default="archive", env="MINIO_BUCKET_ARCHIVE")
 
-    # Redis Configuration
+    # Redis Configuration (aligned with ADR-2025-10-03-003)
     redis_url: str = Field(default="redis://localhost:6379/0", env="REDIS_URL")
-    redis_stream_name: str = Field(default="ingestion:events", env="REDIS_STREAM_INGESTION")
-    redis_consumer_group: str = Field(default="rag-processors", env="REDIS_CONSUMER_GROUP")
+    redis_stream_name: str = Field(default="audio.ingestion", env="REDIS_STREAM_INGESTION")
+    redis_consumer_group: str = Field(default="rag-ingestion", env="REDIS_CONSUMER_GROUP")
     redis_consumer_name: str = Field(default="consumer-1", env="REDIS_CONSUMER_NAME")
+    redis_dlq_stream: str = Field(default="audio.ingestion.deadletter", env="REDIS_DLQ_STREAM")
     redis_max_retries: int = Field(default=3, env="REDIS_MAX_RETRIES")
     redis_block_ms: int = Field(default=5000, env="REDIS_BLOCK_MS")  # 5 seconds
     redis_batch_size: int = Field(default=10, env="REDIS_BATCH_SIZE")

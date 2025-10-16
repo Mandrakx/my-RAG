@@ -33,8 +33,14 @@ class IngestionJob(Base):
 
     # Source information (from Transcript service)
     job_id = Column(String, unique=True, nullable=False, index=True)
+    external_event_id = Column(String, unique=True, nullable=False, index=True)  # NEW: Stable ID from contract
     source_bucket = Column(String, nullable=False)  # MinIO bucket
     source_key = Column(String, nullable=False)     # Object key in bucket
+
+    # Cross-cutting contract fields (ADR-2025-10-03-003)
+    trace_id = Column(String, nullable=True, index=True)  # NEW: For distributed tracing
+    checksum = Column(String, nullable=True)  # NEW: SHA-256 checksum from Redis message
+    schema_version = Column(String, nullable=True)  # NEW: Payload schema version
 
     # Status tracking
     status = Column(String, default=IngestionStatus.PENDING.value, index=True)
@@ -50,6 +56,7 @@ class IngestionJob(Base):
     # Processing details
     error_message = Column(Text, nullable=True)
     error_stack = Column(Text, nullable=True)
+    error_code = Column(String, nullable=True)  # NEW: Standardized error code (e.g., 'checksum_mismatch')
     processing_metadata = Column(JSON, default={})
 
     # Results

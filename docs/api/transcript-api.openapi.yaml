@@ -29,9 +29,23 @@ info:
     Authorization: ApiKey <your-api-key>
     ```
 
+    API keys are managed through fastapi_simple_security (stored in SQLite database) and can
+    be created, revoked, or renewed using the `/auth/*` endpoints. Keys do not expire by
+    default but can be manually revoked using the `/auth/revoke` endpoint.
+
+    ## Security Headers
+    All API responses include the following security headers:
+    - `Strict-Transport-Security: max-age=31536000; includeSubDomains` - Forces HTTPS for 1 year
+    - `X-Content-Type-Options: nosniff` - Prevents MIME type sniffing
+    - `X-Frame-Options: DENY` - Prevents clickjacking attacks
+    - `X-XSS-Protection: 1; mode=block` - Enables XSS filtering in older browsers
+    - `Content-Security-Policy: default-src 'self'` - Restricts resource loading
+    - `Referrer-Policy: strict-origin-when-cross-origin` - Controls referrer information
+
     ## Rate Limits
     - 10 job creations per minute per device
     - 100 status checks per minute per device
+    - 5 authentication operations per minute per device
 
   version: 1.2.3
   contact:
@@ -54,6 +68,8 @@ security:
 tags:
   - name: Health
     description: Service health and readiness checks
+  - name: Authentication
+    description: API key management (create, revoke, renew)
   - name: Jobs (Presigned URL Flow)
     description: |
       Presigned URL upload flow (4 steps total):
@@ -132,6 +148,158 @@ paths:
                     type: integer
                     description: Seconds to wait
                     example: 300
+
+  /auth/new:
+    get:
+      tags:
+        - Authentication
+      summary: Create a new API key
+      description: |
+        Creates a new API key for authentication using fastapi_simple_security.
+        This endpoint requires a valid API key for authentication.
+
+        The returned API key should be securely stored on the client device (iOS Keychain).
+        API keys are stored in SQLite database (`data/api_keys.sqlite3`).
+
+        **Query Parameters:**
+        - `never_expires` (optional): Set to `true` to create non-expiring key (default: true)
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: never_expires
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: true
+          description: If true, key never expires
+      responses:
+        '200':
+          description: API key created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  api_key:
+                    type: string
+                    description: The actual API key (only shown once - store securely!)
+                    example: "abc123-def456-ghi789"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /auth/revoke:
+    get:
+      tags:
+        - Authentication
+      summary: Revoke an API key
+      description: |
+        Immediately revokes an API key, making it invalid for future requests.
+        Uses the current authenticated API key to revoke itself or another key.
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: api_key
+          in: query
+          required: false
+          schema:
+            type: string
+          description: The API key to revoke (if omitted, revokes the current key)
+      responses:
+        '200':
+          description: API key revoked successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "API key revoked"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: API key not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /auth/renew:
+    get:
+      tags:
+        - Authentication
+      summary: Renew an expiring API key
+      description: |
+        Creates a new API key to replace the current one.
+        The old key is automatically revoked.
+
+        This is useful for periodic key rotation security best practices.
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: never_expires
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: true
+          description: If true, new key never expires
+      responses:
+        '200':
+          description: New API key created successfully (old key revoked)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  api_key:
+                    type: string
+                    description: The new API key (only shown once - store securely!)
+                    example: "xyz789-uvw456-rst123"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /auth/logs:
+    get:
+      tags:
+        - Authentication
+      summary: Get API key usage logs
+      description: |
+        Returns usage logs for the authenticated API key.
+        Useful for monitoring and auditing API key usage.
+      security:
+        - ApiKeyAuth: []
+      responses:
+        '200':
+          description: API key logs retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  logs:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        timestamp:
+                          type: string
+                          format: date-time
+                        endpoint:
+                          type: string
+                        ip_address:
+                          type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
 
   /v1/jobs/init:
     post:

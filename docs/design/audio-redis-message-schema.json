@@ -72,7 +72,14 @@
     },
     "metadata": {
       "type": "object",
-      "description": "Optional additional fields agreed between teams.",
+      "description": "Optional additional fields agreed between teams. Should include 'trace_id' (UUID v4) for distributed tracing when available.",
+      "properties": {
+        "trace_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Distributed tracing identifier propagated from device through transcript to RAG ingestion (recommended)"
+        }
+      },
       "additionalProperties": true
     }
   }

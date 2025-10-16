@@ -124,7 +124,12 @@ class ConversationPayload(BaseModel):
     my-RAG ne fait QUE valider - PAS normaliser!
     """
     schema_version: str = Field(pattern=r"^\d+\.\d+$")
-    external_event_id: str = Field(min_length=4, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")
+    external_event_id: str = Field(
+        min_length=4,
+        max_length=128,
+        pattern=r"^rec-\d{8}T\d{6}Z-[a-f0-9]{8}$",
+        description="Format: rec-<ISO8601>-<UUID> (e.g., rec-20251003T091500Z-3f9c4241)"
+    )
     source_system: str = Field(min_length=1, max_length=64)
     created_at: datetime
 
