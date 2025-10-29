@@ -31,10 +31,20 @@ class ProducerInfo(BaseModel):
 
 class RedisMessageMetadata(BaseModel):
     """Metadata section from Redis message"""
-    trace_id: Optional[str] = Field(None, description="UUID v4 for distributed tracing")
+    trace_id: str = Field(..., description="UUID v4 for distributed tracing (REQUIRED)")
 
     class Config:
         extra = "allow"  # Allow additional metadata fields
+
+    @validator('trace_id')
+    def validate_trace_id_uuid(cls, v):
+        """Validate that trace_id is a valid UUID"""
+        import uuid
+        try:
+            uuid.UUID(v)
+        except (ValueError, AttributeError):
+            raise ValueError(f"trace_id must be a valid UUID, got: {v}")
+        return v
 
 
 class AudioIngestionMessage(BaseModel):
@@ -46,8 +56,8 @@ class AudioIngestionMessage(BaseModel):
     external_event_id: str = Field(
         min_length=4,
         max_length=128,
-        pattern=r"^[A-Za-z0-9._:-]+$",
-        description="Stable identifier matching archive name"
+        pattern=r"^rec-\d{8}T\d{6}Z-[a-f0-9]{8}$",
+        description="Stable identifier matching archive name (format: rec-YYYYMMDDTHHMMSSZ-<8hex>)"
     )
     package_uri: str = Field(
         description="MinIO URI pointing to tar.gz archive (format: minio://bucket/path)"
@@ -111,6 +121,43 @@ class AudioIngestionMessage(BaseModel):
     def get_checksum_hash(self) -> str:
         """Extract hash from checksum (remove 'sha256:' prefix)"""
         return self.checksum.replace('sha256:', '')
+
+    @validator('external_event_id')
+    def validate_external_event_id_timestamp(cls, v):
+        """Validate external_event_id timestamp is reasonable (not future, not too old)"""
+        from datetime import timedelta
+
+        # Extract timestamp part: rec-20251016T120000Z-3f9c4241
+        # Format: rec-YYYYMMDDTHHMMSSZ-<8hex>
+        parts = v.split('-')
+        if len(parts) < 3:
+            raise ValueError(f"Invalid external_event_id format: {v}")
+
+        timestamp_str = parts[1]  # 20251016T120000Z
+
+        try:
+            # Parse timestamp
+            timestamp = datetime.strptime(timestamp_str, '%Y%m%dT%H%M%SZ')
+
+            # Check not in future (allow 5 min clock skew)
+            now = datetime.utcnow()
+            if timestamp > now + timedelta(minutes=5):
+                raise ValueError(
+                    f"external_event_id timestamp is in the future: {timestamp} > {now}"
+                )
+
+            # Check not too old (max 30 days)
+            if timestamp < now - timedelta(days=30):
+                raise ValueError(
+                    f"external_event_id timestamp is too old: {timestamp} < {now - timedelta(days=30)}"
+                )
+
+        except ValueError as e:
+            if "does not match format" in str(e):
+                raise ValueError(f"Invalid timestamp in external_event_id: {timestamp_str}")
+            raise
+
+        return v
 
 
 class RedisMessageParser:
